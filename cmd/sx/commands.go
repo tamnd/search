@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/tamnd/search"
+	"github.com/tamnd/search/agg"
 	"github.com/tamnd/search/analysis"
+	"github.com/tamnd/search/query"
 	"github.com/tamnd/search/schema"
 )
 
@@ -567,6 +569,9 @@ func cmdQuery(args []string) int {
 	fields := fs.String("fields", "", "comma-separated list of stored fields to include in each hit")
 	format := fs.String("format", "table", "output format: table|json|jsonl")
 	explain := fs.Bool("explain", false, "include a per-hit score explanation")
+	sortSpec := fs.String("sort", "", "sort keys, comma-separated, each field[:asc|desc][:missing_last]; _score for relevance")
+	facetSpec := fs.String("facet", "", "aggregations, semicolon-separated, each name=kind:field[:opts] (see docs)")
+	collapse := fs.String("collapse", "", "keyword field to collapse hits on, keeping the top hit per group")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -589,6 +594,37 @@ func cmdQuery(args []string) int {
 		defField = defaultField(db)
 	}
 
+	proj := splitList(*fields)
+	label := qstr
+	if label == "" {
+		label = "(json) " + *jsonPath
+	}
+
+	// The sort, facet, and collapse path goes through SearchRequestExec, which
+	// reads the doc-values columns (doc 14). Without any of those flags the plain
+	// score-ranked top-k path is used.
+	if *sortSpec != "" || *facetSpec != "" || *collapse != "" {
+		req, err := buildSearchRequest(qstr, *jsonPath, defField, *from+*size, *sortSpec, *facetSpec, *collapse)
+		if err != nil {
+			return fail("query: %v", err)
+		}
+		start := time.Now()
+		res, err := db.SearchRequestExec(req)
+		if err != nil {
+			return fail("query: %v", err)
+		}
+		elapsed := time.Since(start)
+		hits := page(res.Hits, *from, *size)
+		switch *format {
+		case "json":
+			return printRequestJSON(hits, res.Aggs, proj, *explain)
+		case "jsonl":
+			return printQueryJSONL(hits, proj, *explain)
+		default:
+			return printRequestTable(db, hits, res.Aggs, proj, label, elapsed)
+		}
+	}
+
 	start := time.Now()
 	hits, err := runQuery(db, qstr, *jsonPath, defField, *from+*size)
 	if err != nil {
@@ -597,11 +633,6 @@ func cmdQuery(args []string) int {
 	elapsed := time.Since(start)
 
 	hits = page(hits, *from, *size)
-	proj := splitList(*fields)
-	label := qstr
-	if label == "" {
-		label = "(json) " + *jsonPath
-	}
 
 	switch *format {
 	case "json":
@@ -611,6 +642,136 @@ func cmdQuery(args []string) int {
 	default:
 		return printQueryTable(db, hits, proj, label, elapsed)
 	}
+}
+
+// buildSearchRequest assembles a SearchRequest from the query string or JSON DSL
+// plus the parsed sort, facet, and collapse flags.
+func buildSearchRequest(qstr, jsonPath, defField string, k int, sortSpec, facetSpec, collapse string) (search.SearchRequest, error) {
+	if k < 1 {
+		k = 1
+	}
+	var q query.Query
+	var err error
+	if jsonPath != "" {
+		b, rerr := os.ReadFile(jsonPath)
+		if rerr != nil {
+			return search.SearchRequest{}, rerr
+		}
+		q, err = query.ParseJSON(b)
+	} else {
+		q, err = query.ParseString(qstr, defField)
+	}
+	if err != nil {
+		return search.SearchRequest{}, err
+	}
+	req := search.SearchRequest{Query: q, K: k, Collapse: collapse}
+	if sortSpec != "" {
+		req.Sort, err = parseSortSpec(sortSpec)
+		if err != nil {
+			return search.SearchRequest{}, err
+		}
+	}
+	if facetSpec != "" {
+		req.Aggs, err = parseFacetSpec(facetSpec)
+		if err != nil {
+			return search.SearchRequest{}, err
+		}
+	}
+	return req, nil
+}
+
+// parseSortSpec parses a comma-separated sort flag. Each key is
+// field[:asc|desc][:missing_last]; the field _score sorts by relevance.
+func parseSortSpec(spec string) ([]search.SortKey, error) {
+	var keys []search.SortKey
+	for part := range strings.SplitSeq(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		bits := strings.Split(part, ":")
+		k := search.SortKey{Field: strings.TrimSpace(bits[0])}
+		for _, opt := range bits[1:] {
+			switch strings.TrimSpace(opt) {
+			case "asc":
+				k.Desc = false
+			case "desc":
+				k.Desc = true
+			case "missing_last":
+				k.MissingLast = true
+			default:
+				return nil, fmt.Errorf("bad sort option %q in %q", opt, part)
+			}
+		}
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+// parseFacetSpec parses a semicolon-separated facet flag. Each facet is
+// name=kind:field[:opts]. Supported kinds: terms (opt = size), histogram (opt =
+// interval), min/max/sum/avg/count/stats, cardinality, and percentiles (opt =
+// pipe-separated percents). Range and nested facets are library-only.
+func parseFacetSpec(spec string) (map[string]search.AggSpec, error) {
+	aggs := map[string]search.AggSpec{}
+	for part := range strings.SplitSeq(spec, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, body, ok := strings.Cut(part, "=")
+		if !ok {
+			return nil, fmt.Errorf("bad facet %q, want name=kind:field[:opts]", part)
+		}
+		name = strings.TrimSpace(name)
+		bits := strings.Split(body, ":")
+		if len(bits) < 2 {
+			return nil, fmt.Errorf("bad facet %q, want name=kind:field[:opts]", part)
+		}
+		a := search.AggSpec{Kind: strings.TrimSpace(bits[0]), Field: strings.TrimSpace(bits[1])}
+		opt := ""
+		if len(bits) > 2 {
+			opt = strings.TrimSpace(bits[2])
+		}
+		switch a.Kind {
+		case "terms":
+			a.Size = 10
+			if opt != "" {
+				n, perr := strconv.Atoi(opt)
+				if perr != nil {
+					return nil, fmt.Errorf("bad terms size %q: %v", opt, perr)
+				}
+				a.Size = n
+			}
+		case "histogram":
+			if opt == "" {
+				return nil, fmt.Errorf("histogram facet %q needs an interval", name)
+			}
+			iv, perr := strconv.ParseFloat(opt, 64)
+			if perr != nil {
+				return nil, fmt.Errorf("bad histogram interval %q: %v", opt, perr)
+			}
+			a.Interval = iv
+		case "percentiles":
+			a.Percents = []float64{50, 95, 99}
+			if opt != "" {
+				a.Percents = nil
+				for ps := range strings.SplitSeq(opt, "|") {
+					p, perr := strconv.ParseFloat(strings.TrimSpace(ps), 64)
+					if perr != nil {
+						return nil, fmt.Errorf("bad percentile %q: %v", ps, perr)
+					}
+					a.Percents = append(a.Percents, p)
+				}
+			}
+		case "min", "max", "sum", "avg", "count", "stats", "cardinality":
+			// no options
+		default:
+			return nil, fmt.Errorf("unsupported facet kind %q (use the library for range and nested facets)", a.Kind)
+		}
+		aggs[name] = a
+	}
+	return aggs, nil
 }
 
 // runQuery parses and runs the query, requesting want hits.
@@ -744,6 +905,88 @@ func printQueryTable(db *search.DB, hits []search.Hit, proj []string, label stri
 			}
 		}
 		_, _ = fmt.Fprintf(w, "  %-8.3f %-16s %s\n", h.Score, h.ExternalID, summary)
+	}
+	return 0
+}
+
+// aggResultJSON turns an aggregation result into a plain JSON-friendly value: a
+// bucket list for bucketed aggs, a single number for single-value metrics, or a
+// name/number map for multi-value metrics.
+func aggResultJSON(r agg.Result) any {
+	if r.Buckets != nil {
+		buckets := make([]map[string]any, len(r.Buckets))
+		for i, b := range r.Buckets {
+			m := map[string]any{"key": b.Key, "count": b.Count}
+			if len(b.Subs) > 0 {
+				subs := make(map[string]any, len(b.Subs))
+				for name, sr := range b.Subs {
+					subs[name] = aggResultJSON(sr)
+				}
+				m["aggs"] = subs
+			}
+			buckets[i] = m
+		}
+		return buckets
+	}
+	if r.Values != nil {
+		return r.Values
+	}
+	return r.Value
+}
+
+// printRequestJSON prints hits and aggregation results as one indented JSON
+// object.
+func printRequestJSON(hits []search.Hit, aggs map[string]agg.Result, proj []string, explain bool) int {
+	out := make([]map[string]any, len(hits))
+	for i, h := range hits {
+		out[i] = hitDoc(h, proj, explain)
+	}
+	doc := map[string]any{"hits": out}
+	if len(aggs) > 0 {
+		a := make(map[string]any, len(aggs))
+		for name, r := range aggs {
+			a[name] = aggResultJSON(r)
+		}
+		doc["aggs"] = a
+	}
+	return printJSON(doc)
+}
+
+// printRequestTable prints the hit table followed by a block per aggregation.
+func printRequestTable(db *search.DB, hits []search.Hit, aggs map[string]agg.Result, proj []string, label string, elapsed time.Duration) int {
+	if rc := printQueryTable(db, hits, proj, label, elapsed); rc != 0 {
+		return rc
+	}
+	if len(aggs) == 0 {
+		return 0
+	}
+	w := bufio.NewWriter(os.Stdout)
+	defer func() { _ = w.Flush() }()
+	names := make([]string, 0, len(aggs))
+	for name := range aggs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		r := aggs[name]
+		_, _ = fmt.Fprintf(w, "\nFACET %s\n", name)
+		switch {
+		case r.Buckets != nil:
+			for _, b := range r.Buckets {
+				_, _ = fmt.Fprintf(w, "  %-24s %d\n", b.Key, b.Count)
+			}
+		case r.Values != nil:
+			keys := make([]string, 0, len(r.Values))
+			for k := range r.Values {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				_, _ = fmt.Fprintf(w, "  %-24s %g\n", k, r.Values[k])
+			}
+		default:
+			_, _ = fmt.Fprintf(w, "  %g\n", r.Value)
+		}
 	}
 	return 0
 }
