@@ -53,8 +53,13 @@ func flushBatch(c *catalog.Catalog, s *schema.Schema, entries []docEntry, maxDoc
 	}
 	// entries are sorted ascending by doc-id, so the first is the batch's base.
 	baseDoc := uint32(entries[0].docID)
-	_, err = segment.Flush(c, segID, mt, baseDoc, uint32(maxDoc)+1)
-	return err
+	if _, err = segment.Flush(c, segID, mt, baseDoc, uint32(maxDoc)+1); err != nil {
+		return err
+	}
+	// Build the columnar doc-values and BKD points index for the same span from
+	// the raw document bodies (doc 14). Sorting, faceting, and fast range scans
+	// read these columns; the inverted index above serves matching.
+	return flushDocValues(c, s, segID, entries, baseDoc, uint32(maxDoc)+1)
 }
 
 // indexFields analyzes every indexed text and keyword field of one document into
