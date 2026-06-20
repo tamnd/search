@@ -35,6 +35,10 @@ func run(args []string) int {
 		return cmdCreate(args[1:])
 	case "index":
 		return cmdIndex(args[1:])
+	case "update":
+		return cmdUpdate(args[1:])
+	case "delete":
+		return cmdDelete(args[1:])
 	case "get":
 		return cmdGet(args[1:])
 	case "analyze":
@@ -45,6 +49,8 @@ func run(args []string) int {
 		return cmdInspect(args[1:])
 	case "query", "search":
 		return cmdQuery(args[1:])
+	case "compact":
+		return cmdCompact(args[1:])
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "sx: unknown subcommand %q\n\n", args[0])
 		usage(os.Stderr)
@@ -87,14 +93,16 @@ commands:
 
   create     create a .sx file and set its schema
   index      index documents from JSONL into a .sx file
+  update     reindex documents, replacing ones with the same id
+  delete     soft-delete documents by external id
   get        fetch a stored document by id
   analyze    run an analyzer over text
   schema     print the schema of a .sx file
 
   inspect    dump the segment structure of a .sx file
   query      run a query against a .sx file
+  compact    merge segments and reclaim deleted space
 
-  compact    compact and reclaim space               (not yet implemented)
   backup     copy a consistent snapshot              (not yet implemented)
   info       print file header and meta summary       (not yet implemented)
   bench      run the latency benchmark suite          (not yet implemented)
