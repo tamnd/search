@@ -116,6 +116,20 @@ func ParseNumericBound(t FieldType, s string) (term string, ok bool, err error) 
 	}
 }
 
+// ToInt64 coerces a Go value into an int64 for a long field's doc-values column.
+func ToInt64(v any) (int64, error) { return toInt64(v) }
+
+// ToFloat64 coerces a Go value into a float64 for a double field's doc-values
+// column.
+func ToFloat64(v any) (float64, error) { return toFloat64(v) }
+
+// ToBool coerces a Go value into a bool for a boolean field's doc-values column.
+func ToBool(v any) (bool, error) { return toBool(v) }
+
+// ToEpochNanos coerces a date value into unix nanoseconds for a date field's
+// doc-values column.
+func ToEpochNanos(v any) (int64, error) { return toEpochNanos(v) }
+
 func toInt64(v any) (int64, error) {
 	switch n := v.(type) {
 	case int:
