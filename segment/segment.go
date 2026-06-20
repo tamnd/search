@@ -25,6 +25,7 @@ import (
 	"github.com/tamnd/search/fst"
 	"github.com/tamnd/search/memtable"
 	"github.com/tamnd/search/postings"
+	"github.com/tamnd/search/score"
 )
 
 // KV is the catalog surface the segment layer needs. catalog.Catalog satisfies
@@ -48,7 +49,8 @@ type FieldMeta struct {
 // Meta is a segment's metadata record.
 type Meta struct {
 	ID       uint64
-	MaxDoc   uint32 // one past the largest local doc-id (doc-id space size)
+	BaseDoc  uint32 // smallest global doc-id the segment may hold
+	MaxDoc   uint32 // one past the largest global doc-id the segment may hold
 	DocCount uint32 // number of documents flushed into the segment
 	Fields   []FieldMeta
 }
@@ -69,14 +71,17 @@ func metaKey(id uint64) []byte {
 }
 
 // Flush writes the memtable as segment id into kv and returns its metadata. The
-// caller assigns id (monotonic) and supplies the segment's doc-id space size.
-func Flush(kv KV, id uint64, mt *memtable.MemTable, maxDoc uint32) (*Meta, error) {
-	meta := &Meta{ID: id, MaxDoc: maxDoc, DocCount: uint32(mt.DocCount())}
+// caller assigns id (monotonic) and supplies the segment's global doc-id range
+// [baseDoc, maxDoc): baseDoc is the smallest doc-id the batch carries and maxDoc
+// is one past the largest. The per-field norm arrays are sized to this range, not
+// to the whole index, so a segment's storage stays bounded by its own batch.
+func Flush(kv KV, id uint64, mt *memtable.MemTable, baseDoc, maxDoc uint32) (*Meta, error) {
+	meta := &Meta{ID: id, BaseDoc: baseDoc, MaxDoc: maxDoc, DocCount: uint32(mt.DocCount())}
 
 	names := mt.FieldNames()
 	sort.Strings(names)
 	for _, name := range names {
-		fm, err := flushField(kv, id, name, mt.Field(name))
+		fm, err := flushField(kv, id, name, mt.Field(name), baseDoc, maxDoc)
 		if err != nil {
 			return nil, err
 		}
@@ -92,8 +97,12 @@ func Flush(kv KV, id uint64, mt *memtable.MemTable, maxDoc uint32) (*Meta, error
 	return meta, nil
 }
 
-// flushField encodes one field's term dictionary and postings region.
-func flushField(kv KV, id uint64, name string, f *memtable.Field) (FieldMeta, error) {
+// flushField encodes one field's term dictionary, postings region, and length
+// norms. The norms are a dense array of one SmallFloat byte per doc-id over the
+// segment's own doc-id range [baseDoc, maxDoc), indexed by (doc-id - baseDoc); a
+// doc-id that carried no token for the field encodes to a zero norm and is never
+// scored for this field anyway.
+func flushField(kv KV, id uint64, name string, f *memtable.Field, baseDoc, maxDoc uint32) (FieldMeta, error) {
 	terms := make([]string, 0, len(f.Terms))
 	for term := range f.Terms {
 		terms = append(terms, term)
@@ -144,10 +153,22 @@ func flushField(kv KV, id uint64, name string, f *memtable.Field) (FieldMeta, er
 	fm.TermCount = uint64(len(terms))
 	fm.DocCount = uint32(len(docSet))
 
+	span := uint32(0)
+	if maxDoc > baseDoc {
+		span = maxDoc - baseDoc
+	}
+	norms := make([]byte, span)
+	for d := range norms {
+		norms[d] = score.EncodeNorm(int32(f.Length(baseDoc + uint32(d))))
+	}
+
 	if err := kv.Put(catalog.NSSegFST, segKey(id, name), dict.Bytes()); err != nil {
 		return FieldMeta{}, err
 	}
 	if err := kv.Put(catalog.NSSegPostings, segKey(id, name), region); err != nil {
+		return FieldMeta{}, err
+	}
+	if err := kv.Put(catalog.NSSegNorms, segKey(id, name), norms); err != nil {
 		return FieldMeta{}, err
 	}
 	return fm, nil
@@ -209,10 +230,12 @@ func (s *Segment) FieldMeta(name string) (FieldMeta, bool) {
 	return FieldMeta{}, false
 }
 
-// FieldReader gives access to one field's term dictionary and postings.
+// FieldReader gives access to one field's term dictionary, postings, and norms.
 type FieldReader struct {
 	fst        *fst.FST
 	region     []byte
+	norms      []byte
+	baseDoc    uint32 // global doc-id of norms[0]
 	positional bool
 }
 
@@ -234,7 +257,28 @@ func (s *Segment) Field(kv KV, name string) (*FieldReader, bool, error) {
 	if err != nil || !ok {
 		return nil, false, err
 	}
-	return &FieldReader{fst: f, region: region, positional: fm.Positional}, true, nil
+	// Norms may be absent for segments written before norms existed; treat a
+	// missing array as all-zero (length normalization falls back to avgdl).
+	norms, _, err := kv.Get(catalog.NSSegNorms, segKey(s.meta.ID, name))
+	if err != nil {
+		return nil, false, err
+	}
+	return &FieldReader{fst: f, region: region, norms: norms, baseDoc: s.meta.BaseDoc, positional: fm.Positional}, true, nil
+}
+
+// Norm returns the length-norm byte for docID in this field, or zero when the
+// doc-id is outside the segment or carried no token for the field. Norms are
+// stored relative to the segment's base doc-id, so the global doc-id is offset by
+// baseDoc before indexing.
+func (fr *FieldReader) Norm(docID uint32) byte {
+	if docID < fr.baseDoc {
+		return 0
+	}
+	i := docID - fr.baseDoc
+	if int(i) >= len(fr.norms) {
+		return 0
+	}
+	return fr.norms[i]
 }
 
 // Postings returns an iterator over the postings of term, or false if the term
@@ -260,6 +304,37 @@ func (fr *FieldReader) Postings(term string) (*postings.Reader, bool, error) {
 		return nil, false, err
 	}
 	return r, true, nil
+}
+
+// Positional reports whether the field keeps token positions.
+func (fr *FieldReader) Positional() bool { return fr.positional }
+
+// PrefixTerms returns every term in the field that begins with prefix, in
+// lexicographic order.
+func (fr *FieldReader) PrefixTerms(prefix string) ([]string, error) {
+	entries, err := fr.fst.PrefixScan([]byte(prefix))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = string(e.Term)
+	}
+	return out, nil
+}
+
+// RangeTerms returns every term t with lo <= t < hi in lexicographic order; a nil
+// bound is open on that side.
+func (fr *FieldReader) RangeTerms(lo, hi []byte) ([]string, error) {
+	entries, err := fr.fst.RangeScan(lo, hi)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = string(e.Term)
+	}
+	return out, nil
 }
 
 // Terms returns every term in the field in lexicographic order.

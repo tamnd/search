@@ -43,6 +43,8 @@ func run(args []string) int {
 		return cmdSchema(args[1:])
 	case "inspect":
 		return cmdInspect(args[1:])
+	case "query", "search":
+		return cmdQuery(args[1:])
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "sx: unknown subcommand %q\n\n", args[0])
 		usage(os.Stderr)
@@ -90,8 +92,8 @@ commands:
   schema     print the schema of a .sx file
 
   inspect    dump the segment structure of a .sx file
+  query      run a query against a .sx file
 
-  search     run a query against a .sx file          (not yet implemented)
   compact    compact and reclaim space               (not yet implemented)
   backup     copy a consistent snapshot              (not yet implemented)
   info       print file header and meta summary       (not yet implemented)

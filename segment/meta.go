@@ -19,6 +19,7 @@ func writeMeta(kv KV, m *Meta) error {
 func encodeMeta(m *Meta) []byte {
 	var b []byte
 	b = binary.AppendUvarint(b, m.ID)
+	b = binary.AppendUvarint(b, uint64(m.BaseDoc))
 	b = binary.AppendUvarint(b, uint64(m.MaxDoc))
 	b = binary.AppendUvarint(b, uint64(m.DocCount))
 	b = binary.AppendUvarint(b, uint64(len(m.Fields)))
@@ -43,6 +44,7 @@ func decodeMeta(b []byte) (*Meta, error) {
 	d := &decoder{buf: b}
 	m := &Meta{}
 	m.ID = d.uvarint()
+	m.BaseDoc = uint32(d.uvarint())
 	m.MaxDoc = uint32(d.uvarint())
 	m.DocCount = uint32(d.uvarint())
 	n := d.uvarint()

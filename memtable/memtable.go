@@ -29,6 +29,9 @@ type PostingList struct {
 // Field holds every term seen for one indexed field.
 type Field struct {
 	Terms map[string]*PostingList
+	// lengths records the token count of the field per document, used to compute
+	// the per-document length norm at flush time.
+	lengths map[uint32]uint32
 	// positional records whether positions are kept for this field.
 	positional bool
 }
@@ -64,10 +67,11 @@ func New(maxBytes int64, maxDocs int) *MemTable {
 func (m *MemTable) AddToken(field, term string, docID uint32, position uint32, positional bool) {
 	f := m.fields[field]
 	if f == nil {
-		f = &Field{Terms: make(map[string]*PostingList), positional: positional}
+		f = &Field{Terms: make(map[string]*PostingList), lengths: make(map[uint32]uint32), positional: positional}
 		m.fields[field] = f
 		m.bytes += int64(len(field)) + 48
 	}
+	f.lengths[docID]++
 	pl := f.Terms[term]
 	if pl == nil {
 		pl = &PostingList{}
@@ -128,3 +132,7 @@ func (m *MemTable) FieldNames() []string {
 
 // Positional reports whether a field keeps positions.
 func (f *Field) Positional() bool { return f.positional }
+
+// Length returns the token count recorded for docID in this field, or zero if
+// the document contributed no token to the field.
+func (f *Field) Length(docID uint32) uint32 { return f.lengths[docID] }
