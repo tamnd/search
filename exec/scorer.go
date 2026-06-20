@@ -397,6 +397,65 @@ func (o *orScorer) cost() int {
 	return total
 }
 
+// liveFilter wraps a scorer and drops any matched doc-id that is present in a
+// sorted set of deleted doc-ids. Deletes are soft: a deleted document keeps its
+// postings in an immutable segment until compaction, so the matched stream is
+// filtered here. The dead cursor only moves forward because the wrapped scorer
+// yields ascending doc-ids.
+type liveFilter struct {
+	inner scorer
+	dead  []uint32
+	di    int
+}
+
+func newLiveFilter(inner scorer, dead []uint32) scorer {
+	if len(dead) == 0 {
+		return inner
+	}
+	return &liveFilter{inner: inner, dead: dead}
+}
+
+// skipDead advances the wrapped scorer past any deleted doc-id, returning the
+// first live doc-id at or after d.
+func (f *liveFilter) skipDead(d uint32) (uint32, error) {
+	for d != noMore {
+		for f.di < len(f.dead) && f.dead[f.di] < d {
+			f.di++
+		}
+		if f.di < len(f.dead) && f.dead[f.di] == d {
+			var err error
+			d, err = f.inner.next()
+			if err != nil {
+				return 0, err
+			}
+			continue
+		}
+		return d, nil
+	}
+	return noMore, nil
+}
+
+func (f *liveFilter) docID() uint32 { return f.inner.docID() }
+
+func (f *liveFilter) next() (uint32, error) {
+	d, err := f.inner.next()
+	if err != nil {
+		return 0, err
+	}
+	return f.skipDead(d)
+}
+
+func (f *liveFilter) advance(target uint32) (uint32, error) {
+	d, err := f.inner.advance(target)
+	if err != nil {
+		return 0, err
+	}
+	return f.skipDead(d)
+}
+
+func (f *liveFilter) score() float32 { return f.inner.score() }
+func (f *liveFilter) cost() int      { return f.inner.cost() }
+
 // scoreAt advances every child to >= target and returns the summed score and the
 // number of children positioned exactly at target. It is used by a bool query to
 // fold optional should clauses onto a required lead's documents.

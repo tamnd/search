@@ -78,6 +78,11 @@ func (db *DB) searchTxn(t *Txn, q query.Query, k int) ([]Hit, error) {
 		return nil, err
 	}
 
+	dead, err := set.DeletedDocIDs(c)
+	if err != nil {
+		return nil, err
+	}
+
 	analyzer := func(field string) (*analysis.Analyzer, error) {
 		name := "standard"
 		if f, ok := s.Lookup(field); ok {
@@ -86,7 +91,7 @@ func (db *DB) searchTxn(t *Txn, q query.Query, k int) ([]Hit, error) {
 		return resolveAnalyzer(c, name)
 	}
 
-	se := exec.New(c, set, s, analyzer, live)
+	se := exec.New(c, set, s, analyzer, live, dead)
 	scored, err := se.Search(q, k)
 	if err != nil {
 		return nil, err

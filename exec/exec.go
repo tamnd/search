@@ -28,6 +28,7 @@ type Searcher struct {
 	schema   *schema.Schema
 	analyzer AnalyzerFunc
 	live     []uint32 // sorted live global doc-ids, for match_all
+	dead     []uint32 // sorted deleted global doc-ids, filtered out of every result
 
 	n            int64 // total documents in the collection
 	k1, b        float64
@@ -39,13 +40,14 @@ type Searcher struct {
 // New builds a searcher over the segment set. live is the sorted slice of live
 // global doc-ids (used only by match_all). k1 and b are the BM25 parameters; pass
 // score.DefaultK1 and score.DefaultB for the standard model.
-func New(kv segment.KV, set *segment.SegmentSet, s *schema.Schema, analyzer AnalyzerFunc, live []uint32) *Searcher {
+func New(kv segment.KV, set *segment.SegmentSet, s *schema.Schema, analyzer AnalyzerFunc, live, dead []uint32) *Searcher {
 	se := &Searcher{
 		kv:           kv,
 		segs:         set.Segments(),
 		schema:       s,
 		analyzer:     analyzer,
 		live:         live,
+		dead:         dead,
 		k1:           score.DefaultK1,
 		b:            score.DefaultB,
 		frCache:      make(map[uint64]map[string]*segment.FieldReader),
@@ -68,6 +70,7 @@ func (se *Searcher) Search(q query.Query, k int) ([]collect.Hit, error) {
 	if err != nil {
 		return nil, err
 	}
+	sc = newLiveFilter(sc, se.dead)
 	c := collect.NewTopK(k)
 	d, err := sc.next()
 	if err != nil {

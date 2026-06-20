@@ -145,7 +145,7 @@ func TestIndexAndGet(t *testing.T) {
 	}
 }
 
-func TestUpsertReusesDocID(t *testing.T) {
+func TestReindexReplacesDocument(t *testing.T) {
 	db := openDB(t)
 	defer mustClose(t, db)
 
@@ -163,18 +163,19 @@ func TestUpsertReusesDocID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got["title"] != "v2" {
-		t.Fatalf("after upsert = %+v, want v2", got)
+		t.Fatalf("after reindex = %+v, want v2", got)
 	}
-	// The second write reused doc-id 1 rather than allocating a new one.
-	d1, err := db.GetByDocID(1)
+	// Re-indexing soft-deletes the old version and writes the new one under a
+	// fresh doc-id, so doc 1 is gone and doc 2 holds the current version.
+	if _, err := db.GetByDocID(1); err != ErrNoDoc {
+		t.Fatalf("doc 1 = %v, want ErrNoDoc (old version deleted)", err)
+	}
+	d2, err := db.GetByDocID(2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d1["title"] != "v2" {
-		t.Fatalf("doc 1 = %+v, want v2", d1)
-	}
-	if _, err := db.GetByDocID(2); err != ErrNoDoc {
-		t.Fatalf("doc 2 = %v, want ErrNoDoc (no new id allocated)", err)
+	if d2["title"] != "v2" {
+		t.Fatalf("doc 2 = %+v, want v2", d2)
 	}
 }
 

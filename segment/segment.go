@@ -383,3 +383,33 @@ func (ss *SegmentSet) Segments() []*Segment { return ss.segments }
 
 // Len returns the number of segments.
 func (ss *SegmentSet) Len() int { return len(ss.segments) }
+
+// Find returns the segment whose doc-id range contains docID. Segments hold
+// disjoint ascending ranges, so at most one matches.
+func (ss *SegmentSet) Find(docID uint32) (*Segment, bool) {
+	for _, s := range ss.segments {
+		if docID >= s.meta.BaseDoc && docID < s.meta.MaxDoc {
+			return s, true
+		}
+	}
+	return nil, false
+}
+
+// DeletedDocIDs returns the sorted union of every segment's deleted doc-ids.
+// Query execution filters matches against this set so a deleted document never
+// surfaces, even though its postings remain in an immutable segment until
+// compaction reaps them.
+func (ss *SegmentSet) DeletedDocIDs(kv KV) ([]uint32, error) {
+	var out []uint32
+	for _, s := range ss.segments {
+		d, err := LoadDeletes(kv, s.meta)
+		if err != nil {
+			return nil, err
+		}
+		if d.Empty() {
+			continue
+		}
+		out = d.AppendTo(out)
+	}
+	return out, nil
+}

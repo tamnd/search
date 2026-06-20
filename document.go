@@ -10,6 +10,7 @@ import (
 	"github.com/tamnd/search/catalog"
 	"github.com/tamnd/search/docstore"
 	"github.com/tamnd/search/schema"
+	"github.com/tamnd/search/segment"
 )
 
 // Errors from the document layer.
@@ -97,16 +98,18 @@ func docCount(c *catalog.Catalog) (uint64, error) {
 
 // Index stores the given documents and returns how many were written. Each
 // document is keyed by its external id (the value of the schema primary-key
-// field, default "_id"); indexing a document whose external id already exists
-// overwrites it (upsert) and reuses its internal doc-id. A document without the
-// primary-key field is assigned a fresh external id equal to its new doc-id.
+// field, default "_id"). A document without the primary-key field is assigned a
+// fresh external id equal to its new doc-id.
 //
 // Each Index call persists the stored documents and the external-id mappings and
 // then flushes one immutable inverted-index segment over the batch: every
 // indexed text and keyword field is analyzed into terms and written to the
 // segment's term dictionary and postings (doc 10 §4-5). Re-indexing a document
-// writes fresh postings in the new segment; superseding its stale postings in an
-// older segment is the deletion concern of a later milestone.
+// whose external id already exists is a replace: the old version is soft-deleted
+// (its bit set in its segment's delete bitmap, its stored body dropped) and the
+// new version is indexed under a fresh internal doc-id (doc 10 §8). When a batch
+// repeats an external id, the last occurrence wins and the earlier ones are not
+// indexed.
 func (db *DB) Index(docs []map[string]any) (int, error) {
 	n := 0
 	err := db.Update(func(t *Txn) error {
@@ -120,20 +123,30 @@ func (db *DB) Index(docs []map[string]any) (int, error) {
 		}
 		store := docstore.New(c, catalog.NSDocStore)
 		idField := s.PrimaryKey()
+		docs = dedupByExternalID(docs, idField)
+
+		set, err := segment.LoadSet(c)
+		if err != nil {
+			return err
+		}
+		del := newDeleter(c, set, store)
 
 		// Persist every document first, collecting the (doc-id, body) pairs so the
 		// memtable can be built in ascending doc-id order (the posting-list
-		// invariant), independent of the order upserts resolve to.
+		// invariant), independent of the order replaces resolve to.
 		entries := make([]docEntry, 0, len(docs))
 		var maxDoc uint64
 		for _, doc := range docs {
-			docID, err := indexOne(c, store, idField, doc)
+			docID, err := indexOne(c, store, del, idField, doc)
 			if err != nil {
 				return err
 			}
 			entries = append(entries, docEntry{docID: docID, doc: doc})
 			maxDoc = max(maxDoc, docID)
 			n++
+		}
+		if err := del.flush(); err != nil {
+			return err
 		}
 		return flushBatch(c, s, entries, maxDoc)
 	})
@@ -143,36 +156,60 @@ func (db *DB) Index(docs []map[string]any) (int, error) {
 	return n, nil
 }
 
+// dedupByExternalID collapses a batch so each external id appears once, keeping
+// the last occurrence. Documents with no external id are all kept. This stops a
+// batch from flushing two live versions of the same logical document into one
+// segment, where the replace machinery (which works against already-committed
+// segments) could not see the earlier version.
+func dedupByExternalID(docs []map[string]any, idField string) []map[string]any {
+	seen := make(map[string]int, len(docs))
+	out := make([]map[string]any, 0, len(docs))
+	for _, doc := range docs {
+		ext := externalID(doc, idField)
+		if ext == "" {
+			out = append(out, doc)
+			continue
+		}
+		if i, ok := seen[ext]; ok {
+			out[i] = doc
+			continue
+		}
+		seen[ext] = len(out)
+		out = append(out, doc)
+	}
+	return out
+}
+
 // docEntry pairs a resolved internal doc-id with its document body.
 type docEntry struct {
 	docID uint64
 	doc   map[string]any
 }
 
-// indexOne writes a single document: it resolves or assigns the doc-id from the
-// external id, records the external-id mapping, and stores the document body. It
-// returns the internal doc-id the document was stored under.
-func indexOne(c *catalog.Catalog, store *docstore.Store, idField string, doc map[string]any) (uint64, error) {
+// indexOne writes a single document: when its external id already maps to a
+// document, that older version is soft-deleted first; then a fresh internal
+// doc-id is allocated, the external-id mapping is pointed at it, and the body is
+// stored. It returns the internal doc-id the document was stored under.
+func indexOne(c *catalog.Catalog, store *docstore.Store, del *deleter, idField string, doc map[string]any) (uint64, error) {
 	extID := externalID(doc, idField)
 
-	var docID uint64
 	if extID != "" {
 		if b, ok, err := c.Get(catalog.NSExternalID, []byte(extID)); err != nil {
 			return 0, err
 		} else if ok {
-			docID = binary.BigEndian.Uint64(b)
+			if _, err := del.mark(binary.BigEndian.Uint64(b)); err != nil {
+				return 0, err
+			}
 		}
 	}
-	if docID == 0 {
-		id, err := nextDocID(c)
-		if err != nil {
-			return 0, err
-		}
-		docID = id
-		if extID == "" {
-			extID = fmt.Sprintf("%d", docID)
-			doc[idField] = extID
-		}
+
+	docID, err := nextDocID(c)
+	if err != nil {
+		return 0, err
+	}
+	if extID == "" {
+		extID = fmt.Sprintf("%d", docID)
+		doc[idField] = extID
 	}
 
 	var idb [8]byte
