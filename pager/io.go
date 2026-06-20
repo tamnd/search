@@ -71,6 +71,40 @@ func (p *Pager) AllocPage(typ page.PageType) (page.PageID, error) {
 	return id, nil
 }
 
+// CommitMeta publishes m as the new live meta by writing it into the stale meta
+// slot and fsyncing, the second barrier of the two-fsync commit protocol (doc
+// 05 §4). The caller must have already written and fsynced every data page m
+// references; this call is the single atomic flip that makes the new version
+// current. On a crash before the fsync completes, the stale slot is left invalid
+// (bad CRC or torn) and the previous live slot still wins meta selection, so the
+// commit is all-or-nothing. On success the pager adopts m, the new slot, and the
+// new high-water mark.
+func (p *Pager) CommitMeta(m page.Meta) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.readOnly {
+		return ErrReadOnly
+	}
+	slot := page.PageID(2)
+	if p.metaSlot == 2 {
+		slot = 1
+	}
+	if err := p.writeMeta(slot, m); err != nil {
+		return err
+	}
+	if err := p.f.Sync(); err != nil {
+		return err
+	}
+	p.meta = m
+	p.metaSlot = slot
+	p.pageCount = m.PageCount
+	return nil
+}
+
+// SyncData fsyncs the file, the first barrier of the commit protocol: it makes
+// every data page written in this transaction durable before the meta flip.
+func (p *Pager) SyncData() error { return p.f.Sync() }
+
 // ReadPage reads page id into a fresh buffer and verifies both checksums. It
 // rejects page 0 (the file header is not a common page) and any id past the
 // high-water mark. A checksum failure returns page.ErrPageChecksumFail; the
