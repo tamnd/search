@@ -126,14 +126,25 @@ func mergeField(kv KV, newID uint64, name string, segs []*Segment, dels []*Delet
 			docSet[d] = struct{}{}
 		}
 		fm.SumDocFreq += uint64(len(docs))
+		var maxFreq uint32
 		for _, f := range freqs {
 			fm.SumTotalTermFreq += uint64(f)
+			if f > maxFreq {
+				maxFreq = f
+			}
+		}
+		minNorm := byte(0xFF)
+		for _, d := range docs {
+			if nb := normForDoc(cursors, d); nb < minNorm {
+				minNorm = nb
+			}
 		}
 		docBlob, posBlob, err := postings.Encode(docs, freqs, positions)
 		if err != nil {
 			return FieldMeta{}, err
 		}
 		offset := uint64(len(region))
+		region = appendTermStats(region, maxFreq, minNorm)
 		region = appendBlob(region, docBlob)
 		region = appendBlob(region, posBlob)
 		if err := b.Add([]byte(term), offset); err != nil {
@@ -223,6 +234,18 @@ func gatherTerm(term string, cursors []*fieldCursor, positional bool) (docs, fre
 		positions = nil
 	}
 	return docs, freqs, positions, nil
+}
+
+// normForDoc returns the length-norm byte of docID from whichever input cursor's
+// range covers it. Segments hold disjoint ascending ranges, so at most one cursor
+// answers; the byte feeds the merged term's WAND minimum-norm bound.
+func normForDoc(cursors []*fieldCursor, docID uint32) byte {
+	for _, c := range cursors {
+		if nb := c.fr.Norm(docID); nb != 0 {
+			return nb
+		}
+	}
+	return 0
 }
 
 // mergeNorms builds the output field's dense norm array over [baseDoc, maxDoc) by

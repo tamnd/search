@@ -72,12 +72,19 @@ func (se *Searcher) Search(q query.Query, k int) ([]collect.Hit, error) {
 	}
 	sc = newLiveFilter(sc, se.dead)
 	c := collect.NewTopK(k)
+	// A WAND-capable scorer prunes documents that cannot enter the heap; feed it
+	// the current threshold after every admission so the bound tightens as the
+	// heap fills.
+	prune, prunes := sc.(pruner)
 	d, err := sc.next()
 	if err != nil {
 		return nil, err
 	}
 	for d != noMore {
 		c.Collect(d, sc.score())
+		if prunes {
+			prune.setMinScore(c.Threshold())
+		}
 		d, err = sc.next()
 		if err != nil {
 			return nil, err
