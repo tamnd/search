@@ -51,7 +51,9 @@ func flushBatch(c *catalog.Catalog, s *schema.Schema, entries []docEntry, maxDoc
 	if err != nil {
 		return err
 	}
-	_, err = segment.Flush(c, segID, mt, uint32(maxDoc)+1)
+	// entries are sorted ascending by doc-id, so the first is the batch's base.
+	baseDoc := uint32(entries[0].docID)
+	_, err = segment.Flush(c, segID, mt, baseDoc, uint32(maxDoc)+1)
 	return err
 }
 
@@ -61,18 +63,51 @@ func flushBatch(c *catalog.Catalog, s *schema.Schema, entries []docEntry, maxDoc
 // later milestones.
 func indexFields(c *catalog.Catalog, s *schema.Schema, analyzers map[string]*analysis.Analyzer, mt *memtable.MemTable, docID uint32, doc map[string]any) error {
 	for _, f := range s.Fields {
-		if !f.Opts.Indexed || (f.Type != schema.TypeText && f.Type != schema.TypeKeyword) {
+		if !f.Opts.Indexed {
 			continue
 		}
 		v, ok := doc[f.Name]
 		if !ok || v == nil {
 			continue
 		}
-		a, err := fieldAnalyzer(c, analyzers, f)
+		switch f.Type {
+		case schema.TypeText, schema.TypeKeyword:
+			a, err := fieldAnalyzer(c, analyzers, f)
+			if err != nil {
+				return err
+			}
+			indexValue(mt, a, f, docID, v)
+		case schema.TypeLong, schema.TypeDouble, schema.TypeDate, schema.TypeBoolean:
+			if err := indexNumeric(mt, f, docID, v); err != nil {
+				return err
+			}
+		default:
+			// geo_point and dense_vector are served by later-milestone structures.
+		}
+	}
+	return nil
+}
+
+// indexNumeric inverts a numeric, date, or boolean field as one order-preserving
+// term per value so a RangeQuery can scan it as a term range. These fields keep
+// no positions.
+func indexNumeric(mt *memtable.MemTable, f schema.Field, docID uint32, v any) error {
+	vals := []any{v}
+	if arr, ok := v.([]any); ok {
+		vals = arr
+	}
+	for _, sv := range vals {
+		if sv == nil {
+			continue
+		}
+		term, ok, err := schema.NumericTerm(f.Type, sv)
 		if err != nil {
 			return err
 		}
-		indexValue(mt, a, f, docID, v)
+		if !ok {
+			continue
+		}
+		mt.AddToken(f.Name, term, docID, 0, false)
 	}
 	return nil
 }

@@ -6,10 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tamnd/search"
 	"github.com/tamnd/search/analysis"
@@ -426,6 +428,205 @@ func printInspectTable(segs []search.SegmentInfo) int {
 			_, _ = fmt.Fprintf(w, "  %-20s %-8d %-8d %-8d %-8d %t\n",
 				f.Name, f.TermCount, f.DocCount, f.SumDocFreq, f.SumTotalTermFreq, f.Positional)
 		}
+	}
+	return 0
+}
+
+// cmdQuery runs a full-text search and prints the hits (spec 2063 doc 21 §3.3).
+// The query is given as a positional string in the compact query syntax, or as a
+// full JSON query DSL object via --json. Faceting, highlighting, and multi-field
+// sort are later milestones; S4 carries field-scoped search, paging, projection,
+// and table/json/jsonl output.
+func cmdQuery(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx query <file> '<query string>' [flags]")
+	}
+	path := args[0]
+	fs := flag.NewFlagSet("query", flag.ContinueOnError)
+	field := fs.String("field", "", "default field for bare terms in the query string")
+	jsonPath := fs.String("json", "", "read a JSON query DSL object from this path instead of a query string")
+	size := fs.Int("size", 10, "number of hits to return")
+	from := fs.Int("from", 0, "offset into the result set for pagination")
+	fields := fs.String("fields", "", "comma-separated list of stored fields to include in each hit")
+	format := fs.String("format", "table", "output format: table|json|jsonl")
+	explain := fs.Bool("explain", false, "include a per-hit score explanation")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	qstr := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if (qstr == "") == (*jsonPath == "") {
+		return fail("provide exactly one of a query string or --json")
+	}
+	if *size < 0 || *from < 0 {
+		return fail("--size and --from must be non-negative")
+	}
+
+	db, err := openIndex(path, true)
+	if err != nil {
+		return fail("open %s: %v", path, err)
+	}
+	defer closeDB(db)
+
+	defField := *field
+	if defField == "" {
+		defField = defaultField(db)
+	}
+
+	start := time.Now()
+	hits, err := runQuery(db, qstr, *jsonPath, defField, *from+*size)
+	if err != nil {
+		return fail("query: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	hits = page(hits, *from, *size)
+	proj := splitList(*fields)
+	label := qstr
+	if label == "" {
+		label = "(json) " + *jsonPath
+	}
+
+	switch *format {
+	case "json":
+		return printQueryJSON(hits, proj, *explain)
+	case "jsonl":
+		return printQueryJSONL(hits, proj, *explain)
+	default:
+		return printQueryTable(db, hits, proj, label, elapsed)
+	}
+}
+
+// runQuery parses and runs the query, requesting want hits.
+func runQuery(db *search.DB, qstr, jsonPath, defField string, want int) ([]search.Hit, error) {
+	if want < 1 {
+		want = 1
+	}
+	if jsonPath != "" {
+		b, err := os.ReadFile(jsonPath)
+		if err != nil {
+			return nil, err
+		}
+		return db.SearchJSON(b, want)
+	}
+	return db.SearchString(qstr, defField, want)
+}
+
+// defaultField returns the first text field in the schema, used as the implicit
+// search field when the user gives none. An index without a text field yields "".
+func defaultField(db *search.DB) string {
+	s, err := db.Schema()
+	if err != nil {
+		return ""
+	}
+	names := make([]string, 0, len(s.Fields))
+	for _, f := range s.Fields {
+		if f.Type == schema.TypeText {
+			names = append(names, f.Name)
+		}
+	}
+	sort.Strings(names)
+	if len(names) > 0 {
+		return names[0]
+	}
+	return ""
+}
+
+// page slices hits to the [from, from+size) window, clamping to the bounds.
+func page(hits []search.Hit, from, size int) []search.Hit {
+	if from >= len(hits) {
+		return nil
+	}
+	end := min(from+size, len(hits))
+	return hits[from:end]
+}
+
+// splitList splits a comma-separated flag value into a trimmed, non-empty list.
+func splitList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// hitDoc returns the hit's document projected to the requested fields, always
+// including _id and _score.
+func hitDoc(h search.Hit, proj []string, explain bool) map[string]any {
+	out := map[string]any{}
+	if len(proj) == 0 {
+		maps.Copy(out, h.Document)
+	} else {
+		for _, f := range proj {
+			if v, ok := h.Document[f]; ok {
+				out[f] = v
+			}
+		}
+	}
+	out["_id"] = h.ExternalID
+	out["_score"] = h.Score
+	if explain {
+		out["_explain"] = map[string]any{
+			"score":       h.Score,
+			"description": "BM25(k1=1.2, b=0.75) summed over matched clauses",
+		}
+	}
+	return out
+}
+
+// printQueryJSON prints the hits as one indented JSON object with a hits array.
+func printQueryJSON(hits []search.Hit, proj []string, explain bool) int {
+	out := make([]map[string]any, len(hits))
+	for i, h := range hits {
+		out[i] = hitDoc(h, proj, explain)
+	}
+	return printJSON(map[string]any{"hits": out})
+}
+
+// printQueryJSONL prints one hit per line as a compact JSON object.
+func printQueryJSONL(hits []search.Hit, proj []string, explain bool) int {
+	w := bufio.NewWriter(os.Stdout)
+	defer func() { _ = w.Flush() }()
+	enc := json.NewEncoder(w)
+	for _, h := range hits {
+		if err := enc.Encode(hitDoc(h, proj, explain)); err != nil {
+			return fail("encode json: %v", err)
+		}
+	}
+	return 0
+}
+
+// printQueryTable prints a human-readable result table: a header line with the
+// query, the hit count, and the elapsed time, then a score/id/summary row per
+// hit. The summary column shows the first text field's value.
+func printQueryTable(db *search.DB, hits []search.Hit, proj []string, label string, elapsed time.Duration) int {
+	w := bufio.NewWriter(os.Stdout)
+	defer func() { _ = w.Flush() }()
+	_, _ = fmt.Fprintf(w, "QUERY: %s   HITS: %d   TIME: %s\n\n", label, len(hits), elapsed.Round(time.Microsecond))
+	if len(hits) == 0 {
+		_, _ = fmt.Fprintln(w, "no hits")
+		return 0
+	}
+	summaryField := ""
+	if len(proj) > 0 {
+		summaryField = proj[0]
+	} else {
+		summaryField = defaultField(db)
+	}
+	_, _ = fmt.Fprintf(w, "  %-8s %-16s %s\n", "SCORE", "ID", strings.ToUpper(summaryField))
+	for _, h := range hits {
+		summary := ""
+		if summaryField != "" {
+			if v, ok := h.Document[summaryField]; ok {
+				summary = fmt.Sprintf("%v", v)
+			}
+		}
+		_, _ = fmt.Fprintf(w, "  %-8.3f %-16s %s\n", h.Score, h.ExternalID, summary)
 	}
 	return 0
 }

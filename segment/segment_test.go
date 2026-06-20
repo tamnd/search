@@ -76,7 +76,7 @@ func sampleMemtable() *memtable.MemTable {
 func TestSegmentFlush_TermCount(t *testing.T) {
 	kv := newMemKV()
 	mt := sampleMemtable()
-	meta, err := Flush(kv, 1, mt, 4)
+	meta, err := Flush(kv, 1, mt, 0, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestSegmentFlush_TermCount(t *testing.T) {
 func TestSegmentFlush_PostingRoundtrip(t *testing.T) {
 	kv := newMemKV()
 	mt := sampleMemtable()
-	if _, err := Flush(kv, 1, mt, 4); err != nil {
+	if _, err := Flush(kv, 1, mt, 0, 4); err != nil {
 		t.Fatal(err)
 	}
 	seg, err := Open(kv, 1)
@@ -156,7 +156,7 @@ func TestSegmentFlush_PostingRoundtrip(t *testing.T) {
 func TestSegmentFlush_PositionRoundtrip(t *testing.T) {
 	kv := newMemKV()
 	mt := sampleMemtable()
-	if _, err := Flush(kv, 1, mt, 4); err != nil {
+	if _, err := Flush(kv, 1, mt, 0, 4); err != nil {
 		t.Fatal(err)
 	}
 	seg, _ := Open(kv, 1)
@@ -194,10 +194,10 @@ func TestSegmentFlush_PositionRoundtrip(t *testing.T) {
 
 func TestSegmentSetAndStats(t *testing.T) {
 	kv := newMemKV()
-	if _, err := Flush(kv, 1, sampleMemtable(), 4); err != nil {
+	if _, err := Flush(kv, 1, sampleMemtable(), 0, 4); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Flush(kv, 2, sampleMemtable(), 4); err != nil {
+	if _, err := Flush(kv, 2, sampleMemtable(), 0, 4); err != nil {
 		t.Fatal(err)
 	}
 	set, err := LoadSet(kv)
@@ -229,7 +229,7 @@ func TestSegmentSetAndStats(t *testing.T) {
 func TestGoldenSegment(t *testing.T) {
 	kv := newMemKV()
 	mt := goldenCorpus()
-	meta, err := Flush(kv, 1, mt, uint32(mt.DocCount())+1)
+	meta, err := Flush(kv, 1, mt, 0, uint32(mt.DocCount())+1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func FuzzSegmentFlush(f *testing.F) {
 			mt.AddDoc()
 		}
 		kv := newMemKV()
-		if _, err := Flush(kv, 1, mt, ndocs+1); err != nil {
+		if _, err := Flush(kv, 1, mt, 0, ndocs+1); err != nil {
 			t.Fatal(err)
 		}
 		seg, err := Open(kv, 1)
@@ -365,7 +365,7 @@ func BenchmarkSegmentFlush(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; b.Loop(); i++ {
 		kv := newMemKV()
-		if _, err := Flush(kv, uint64(i+1), mt, 100_001); err != nil {
+		if _, err := Flush(kv, uint64(i+1), mt, 0, 100_001); err != nil {
 			b.Fatal(err)
 		}
 	}

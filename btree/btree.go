@@ -342,21 +342,34 @@ func (t *Tree) Put(root page.PageID, key, val []byte) (page.PageID, error) {
 		}
 		return t.write(leaf)
 	}
-	newRoot, sp, err := t.insert(root, key, val)
+	newRoot, sps, err := t.insert(root, key, val)
 	if err != nil {
 		return 0, err
 	}
-	if sp == nil {
-		return newRoot, nil
+	// The root split; build a new root one level taller. The new root may itself
+	// overflow, so pack it and climb until a single node holds the level.
+	for len(sps) > 0 {
+		keys := make([][]byte, len(sps))
+		kids := make([]page.PageID, len(sps)+1)
+		kids[0] = newRoot
+		for i, sp := range sps {
+			keys[i] = sp.sep
+			kids[i+1] = sp.right
+		}
+		nr := &node{leaf: false, keys: keys, kids: kids}
+		newRoot, sps, err = t.packInterior(nr)
+		if err != nil {
+			return 0, err
+		}
 	}
-	// The root split; build a new root one level taller.
-	nr := &node{leaf: false, keys: [][]byte{sp.sep}, kids: []page.PageID{newRoot, sp.right}}
-	return t.write(nr)
+	return newRoot, nil
 }
 
 // insert recursively inserts into the subtree at id, returning the rewritten
-// node's new id and a non-nil split if the node overflowed.
-func (t *Tree) insert(id page.PageID, key, val []byte) (page.PageID, *split, error) {
+// node's new id and the right siblings produced if the node overflowed. A node
+// whose entries vary widely in size can overflow by more than one page worth, so
+// a single insert may yield several splits, returned left to right.
+func (t *Tree) insert(id page.PageID, key, val []byte) (page.PageID, []split, error) {
 	n, err := t.readNode(id)
 	if err != nil {
 		return 0, nil, err
@@ -372,70 +385,139 @@ func (t *Tree) insert(id page.PageID, key, val []byte) (page.PageID, *split, err
 		return t.finishLeaf(id, n)
 	}
 	ci := n.childIndex(key)
-	childNew, sp, err := t.insert(n.kids[ci], key, val)
+	childNew, sps, err := t.insert(n.kids[ci], key, val)
 	if err != nil {
 		return 0, nil, err
 	}
 	n.kids[ci] = childNew
-	if sp != nil {
-		n.keys = insertAt(n.keys, ci, sp.sep)
-		n.kids = insertAt(n.kids, ci+1, sp.right)
+	for j, sp := range sps {
+		n.keys = insertAt(n.keys, ci+j, sp.sep)
+		n.kids = insertAt(n.kids, ci+j+1, sp.right)
 	}
 	return t.finishInterior(id, n)
 }
 
-// finishLeaf frees the old leaf page and writes n, splitting it first if it no
-// longer fits.
-func (t *Tree) finishLeaf(oldID page.PageID, n *node) (page.PageID, *split, error) {
+// finishLeaf frees the old leaf page and writes n, packing it into several
+// fitting leaves first if it no longer fits.
+func (t *Tree) finishLeaf(oldID page.PageID, n *node) (page.PageID, []split, error) {
 	t.pages.Free(oldID)
-	if n.fits(t.pages.PageSize()) {
-		id, err := t.write(n)
-		return id, nil, err
-	}
-	if len(n.keys) < 2 {
-		return 0, nil, ErrEntryTooLarge
-	}
-	mid := len(n.keys) / 2
-	right := &node{leaf: true, keys: n.keys[mid:], vals: n.vals[mid:]}
-	left := &node{leaf: true, keys: n.keys[:mid], vals: n.vals[:mid]}
-	if !left.fits(t.pages.PageSize()) || !right.fits(t.pages.PageSize()) {
-		return 0, nil, ErrEntryTooLarge
-	}
-	rightID, err := t.write(right)
-	if err != nil {
-		return 0, nil, err
-	}
-	leftID, err := t.write(left)
-	if err != nil {
-		return 0, nil, err
-	}
-	return leftID, &split{sep: cloneBytes(right.keys[0]), right: rightID}, nil
+	return t.packLeaf(n)
 }
 
-// finishInterior frees the old interior page and writes n, splitting it first
-// if it no longer fits.
-func (t *Tree) finishInterior(oldID page.PageID, n *node) (page.PageID, *split, error) {
-	t.pages.Free(oldID)
-	if n.fits(t.pages.PageSize()) {
+// packLeaf writes n as one or more leaves. When n fits a page it is written as
+// is. An overflow is first handled by the conventional even split at the entry
+// midpoint, which keeps both leaves about half full and is the common case for
+// uniformly sized entries. Only when entries vary enough in size that an even
+// split leaves a half still too large does it fall back to greedy byte-balanced
+// packing into the fewest fitting leaves. The leftmost leaf becomes the
+// rewritten node and the rest are returned as right siblings.
+func (t *Tree) packLeaf(n *node) (page.PageID, []split, error) {
+	ps := t.pages.PageSize()
+	if n.fits(ps) {
 		id, err := t.write(n)
 		return id, nil, err
 	}
-	if len(n.keys) < 3 {
-		return 0, nil, ErrEntryTooLarge
+	if len(n.keys) >= 2 {
+		mid := len(n.keys) / 2
+		left := &node{leaf: true, keys: n.keys[:mid], vals: n.vals[:mid]}
+		right := &node{leaf: true, keys: n.keys[mid:], vals: n.vals[mid:]}
+		if left.fits(ps) && right.fits(ps) {
+			return t.writeGroups([]*node{left, right}, func(g *node) []byte { return g.keys[0] })
+		}
 	}
-	mid := len(n.keys) / 2
-	sep := cloneBytes(n.keys[mid])
-	left := &node{leaf: false, keys: n.keys[:mid], kids: n.kids[:mid+1]}
-	right := &node{leaf: false, keys: n.keys[mid+1:], kids: n.kids[mid+1:]}
-	rightID, err := t.write(right)
+	body := page.BodySize(ps)
+	var groups []*node
+	cur := &node{leaf: true}
+	curSize := nbHead
+	for i := range n.keys {
+		entry := chunkLen(len(n.keys[i])) + chunkLen(len(n.vals[i]))
+		if nbHead+entry > body {
+			// A single entry that cannot share a page with the node header is
+			// larger than a page can hold and must be rejected.
+			return 0, nil, ErrEntryTooLarge
+		}
+		if len(cur.keys) > 0 && curSize+entry > body {
+			groups = append(groups, cur)
+			cur = &node{leaf: true}
+			curSize = nbHead
+		}
+		cur.keys = append(cur.keys, n.keys[i])
+		cur.vals = append(cur.vals, n.vals[i])
+		curSize += entry
+	}
+	groups = append(groups, cur)
+	return t.writeGroups(groups, func(g *node) []byte { return g.keys[0] })
+}
+
+// finishInterior frees the old interior page and writes n, packing it into
+// several fitting interior nodes first if it no longer fits.
+func (t *Tree) finishInterior(oldID page.PageID, n *node) (page.PageID, []split, error) {
+	t.pages.Free(oldID)
+	return t.packInterior(n)
+}
+
+// packInterior writes n as one or more interior nodes. An overflow is first
+// handled by the conventional even split at the key midpoint, with that key
+// promoted as the separator; only when an even split leaves a half too large
+// does it fall back to greedy packing. In either case the key spanning two
+// adjacent groups is promoted as the separator between them rather than stored
+// in either, as in a standard B+tree interior split.
+func (t *Tree) packInterior(n *node) (page.PageID, []split, error) {
+	ps := t.pages.PageSize()
+	if n.fits(ps) {
+		id, err := t.write(n)
+		return id, nil, err
+	}
+	if len(n.keys) >= 3 {
+		mid := len(n.keys) / 2
+		left := &node{leaf: false, keys: n.keys[:mid], kids: n.kids[:mid+1]}
+		right := &node{leaf: false, keys: n.keys[mid+1:], kids: n.kids[mid+1:]}
+		if left.fits(ps) && right.fits(ps) {
+			sep := n.keys[mid]
+			return t.writeGroups([]*node{left, right}, func(*node) []byte { return sep })
+		}
+	}
+	body := page.BodySize(ps)
+	var groups []*node
+	var seps [][]byte
+	cur := &node{leaf: false, kids: []page.PageID{n.kids[0]}}
+	curSize := nbHead + 4
+	for i := 1; i < len(n.kids); i++ {
+		add := 4 + chunkLen(len(n.keys[i-1]))
+		if curSize+add > body {
+			// Close the group; the joining key becomes the parent separator.
+			groups = append(groups, cur)
+			seps = append(seps, n.keys[i-1])
+			cur = &node{leaf: false, kids: []page.PageID{n.kids[i]}}
+			curSize = nbHead + 4
+			continue
+		}
+		cur.keys = append(cur.keys, n.keys[i-1])
+		cur.kids = append(cur.kids, n.kids[i])
+		curSize += add
+	}
+	groups = append(groups, cur)
+	idx := 0
+	return t.writeGroups(groups, func(*node) []byte { sep := seps[idx]; idx++; return sep })
+}
+
+// writeGroups writes a sequence of sibling nodes, returning the leftmost as the
+// rewritten node and the rest as splits. sepOf yields the separator key for each
+// non-leftmost group, in order.
+func (t *Tree) writeGroups(groups []*node, sepOf func(*node) []byte) (page.PageID, []split, error) {
+	firstID, err := t.write(groups[0])
 	if err != nil {
 		return 0, nil, err
 	}
-	leftID, err := t.write(left)
-	if err != nil {
-		return 0, nil, err
+	splits := make([]split, 0, len(groups)-1)
+	for _, g := range groups[1:] {
+		id, err := t.write(g)
+		if err != nil {
+			return 0, nil, err
+		}
+		splits = append(splits, split{sep: cloneBytes(sepOf(g)), right: id})
 	}
-	return leftID, &split{sep: sep, right: rightID}, nil
+	return firstID, splits, nil
 }
 
 // Delete removes key and returns the new root. Deletion never rebalances or
