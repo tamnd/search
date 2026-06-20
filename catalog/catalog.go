@@ -25,7 +25,10 @@ const (
 	NSDocID           byte = 0x05 // doc-id allocation counters
 	NSDeletionState   byte = 0x06 // per-segment deletion state
 	NSStats           byte = 0x09 // index-wide statistics
-	NSSchema          byte = 0x0A // schema version, file uuid, id allocators
+	NSSchema          byte = 0x0A // serialized field schema (doc 06 §2)
+	NSAnalyzer        byte = 0x0B // serialized custom analyzer configs (doc 07 §7)
+	NSDocStore        byte = 0x0C // stored-field document blocks (doc 06 §6)
+	NSExternalID      byte = 0x0D // external id -> internal doc id (doc 06 §1.5)
 )
 
 // Catalog is a namespaced view of one B+tree. It mutates through the bound root
