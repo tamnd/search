@@ -156,6 +156,69 @@ func TestSXAnalyze(t *testing.T) {
 	}
 }
 
+func TestSXUpdateDeleteCompact(t *testing.T) {
+	dir := t.TempDir()
+	idx := filepath.Join(dir, "t.sx")
+	schemaPath := writeFile(t, dir, "schema.json",
+		`{"fields":[{"name":"title","type":"text"}]}`)
+	if code := cmdCreate([]string{idx, "--schema", schemaPath}); code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+
+	// Two batches so there is something to compact.
+	b1 := writeFile(t, dir, "b1.jsonl", `{"_id":"a","title":"alpha one"}
+{"_id":"b","title":"alpha two"}`)
+	b2 := writeFile(t, dir, "b2.jsonl", `{"_id":"c","title":"alpha three"}`)
+	if code := cmdIndex([]string{idx, "--file", b1}); code != 0 {
+		t.Fatalf("index b1 exit %d", code)
+	}
+	if code := cmdIndex([]string{idx, "--file", b2}); code != 0 {
+		t.Fatalf("index b2 exit %d", code)
+	}
+
+	// Update replaces document a in place.
+	up := writeFile(t, dir, "up.jsonl", `{"_id":"a","title":"alpha updated"}`)
+	out := captureStdout(t, func() int { return cmdUpdate([]string{idx, "--file", up}) })
+	if !strings.Contains(out, "updated 1") {
+		t.Fatalf("update output = %q", out)
+	}
+	got := captureStdout(t, func() int { return cmdGet([]string{idx, "--id", "a"}) })
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(got), &doc); err != nil {
+		t.Fatalf("get a not json: %v\n%s", err, got)
+	}
+	if doc["title"] != "alpha updated" {
+		t.Fatalf("doc a after update = %+v", doc)
+	}
+
+	// Delete drops document b; a second delete of the same id reports not found.
+	out = captureStdout(t, func() int { return cmdDelete([]string{idx, "b"}) })
+	if !strings.Contains(out, "deleted 1") || !strings.Contains(out, "0 not found") {
+		t.Fatalf("delete output = %q", out)
+	}
+	if code := cmdDelete([]string{idx, "b"}); code != 0 {
+		t.Fatalf("re-delete exit %d", code)
+	}
+
+	// Compact --all merges every segment into one and reaps the deleted document.
+	out = captureStdout(t, func() int { return cmdCompact([]string{idx, "--all"}) })
+	if !strings.Contains(out, "merged") {
+		t.Fatalf("compact output = %q", out)
+	}
+	out = captureStdout(t, func() int { return cmdInspect([]string{idx, "--format", "json"}) })
+	var segs []segmentJSON
+	if err := json.Unmarshal([]byte(out), &segs); err != nil {
+		t.Fatalf("inspect not json: %v\n%s", err, out)
+	}
+	if len(segs) != 1 {
+		t.Fatalf("after compact: %d segments, want 1", len(segs))
+	}
+	// a (updated) and c survive; b was deleted.
+	if segs[0].DocCount != 2 {
+		t.Fatalf("after compact: doc count %d, want 2", segs[0].DocCount)
+	}
+}
+
 // captureStdout runs fn with os.Stdout redirected to a pipe and returns what it
 // wrote. The pipe is drained concurrently so output larger than the pipe buffer
 // does not deadlock.

@@ -33,6 +33,7 @@ import (
 type KV interface {
 	Get(ns byte, key []byte) ([]byte, bool, error)
 	Put(ns byte, key, val []byte) error
+	Delete(ns byte, key []byte) error
 	Scan(ns byte, fn func(key, val []byte) bool) error
 }
 
@@ -122,11 +123,19 @@ func flushField(kv KV, id uint64, name string, f *memtable.Field, baseDoc, maxDo
 		if f.Positional() {
 			positions = make([][]uint32, len(pl.Postings))
 		}
+		var maxFreq uint32
+		minNorm := byte(0xFF)
 		for i, p := range pl.Postings {
 			docs[i] = p.DocID
 			freqs[i] = p.Freq
 			docSet[p.DocID] = struct{}{}
 			fm.SumTotalTermFreq += uint64(p.Freq)
+			if p.Freq > maxFreq {
+				maxFreq = p.Freq
+			}
+			if nb := score.EncodeNorm(int32(f.Length(p.DocID))); nb < minNorm {
+				minNorm = nb
+			}
 			if f.Positional() {
 				positions[i] = p.Positions
 			}
@@ -138,6 +147,7 @@ func flushField(kv KV, id uint64, name string, f *memtable.Field, baseDoc, maxDo
 			return FieldMeta{}, err
 		}
 		offset := uint64(len(region))
+		region = appendTermStats(region, maxFreq, minNorm)
 		region = appendBlob(region, docBlob)
 		region = appendBlob(region, posBlob)
 
@@ -178,6 +188,28 @@ func flushField(kv KV, id uint64, name string, f *memtable.Field, baseDoc, maxDo
 func appendBlob(dst, blob []byte) []byte {
 	dst = binary.AppendUvarint(dst, uint64(len(blob)))
 	return append(dst, blob...)
+}
+
+// appendTermStats prepends a term's WAND bound to its region entry: the maximum
+// term frequency and the minimum length-norm byte over the term's documents. A
+// term's largest possible BM25 contribution is score(maxFreq, minNorm), which
+// WAND uses as the term's upper bound when pruning (doc 13 §1.6).
+func appendTermStats(dst []byte, maxFreq uint32, minNorm byte) []byte {
+	dst = binary.AppendUvarint(dst, uint64(maxFreq))
+	return append(dst, minNorm)
+}
+
+// readTermStats reads the WAND bound at p and returns it with the next offset.
+func readTermStats(buf []byte, p int) (maxFreq uint32, minNorm byte, next int, err error) {
+	v, m := binary.Uvarint(buf[p:])
+	if m <= 0 {
+		return 0, 0, 0, fmt.Errorf("segment: bad term max-freq")
+	}
+	p += m
+	if p >= len(buf) {
+		return 0, 0, 0, fmt.Errorf("segment: missing term min-norm")
+	}
+	return uint32(v), buf[p], p + 1, nil
 }
 
 // readBlob reads a length-prefixed blob at p, returning it and the next offset.
@@ -284,26 +316,38 @@ func (fr *FieldReader) Norm(docID uint32) byte {
 // Postings returns an iterator over the postings of term, or false if the term
 // is not in the field.
 func (fr *FieldReader) Postings(term string) (*postings.Reader, bool, error) {
-	off, ok, err := fr.fst.Lookup([]byte(term))
-	if err != nil || !ok {
-		return nil, false, err
+	r, _, _, ok, err := fr.PostingsWithStats(term)
+	return r, ok, err
+}
+
+// PostingsWithStats returns the postings iterator for term along with its WAND
+// bound (the maximum term frequency and minimum length-norm byte over the term's
+// documents), or false if the term is not in the field.
+func (fr *FieldReader) PostingsWithStats(term string) (r *postings.Reader, maxFreq uint32, minNorm byte, ok bool, err error) {
+	off, found, err := fr.fst.Lookup([]byte(term))
+	if err != nil || !found {
+		return nil, 0, 0, false, err
 	}
-	docBlob, p, err := readBlob(fr.region, int(off))
+	maxFreq, minNorm, p, err := readTermStats(fr.region, int(off))
 	if err != nil {
-		return nil, false, err
+		return nil, 0, 0, false, err
+	}
+	docBlob, p, err := readBlob(fr.region, p)
+	if err != nil {
+		return nil, 0, 0, false, err
 	}
 	posBlob, _, err := readBlob(fr.region, p)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, 0, false, err
 	}
 	if len(posBlob) == 0 {
 		posBlob = nil
 	}
-	r, err := postings.Open(docBlob, posBlob)
+	r, err = postings.Open(docBlob, posBlob)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, 0, false, err
 	}
-	return r, true, nil
+	return r, maxFreq, minNorm, true, nil
 }
 
 // Positional reports whether the field keeps token positions.
@@ -383,3 +427,33 @@ func (ss *SegmentSet) Segments() []*Segment { return ss.segments }
 
 // Len returns the number of segments.
 func (ss *SegmentSet) Len() int { return len(ss.segments) }
+
+// Find returns the segment whose doc-id range contains docID. Segments hold
+// disjoint ascending ranges, so at most one matches.
+func (ss *SegmentSet) Find(docID uint32) (*Segment, bool) {
+	for _, s := range ss.segments {
+		if docID >= s.meta.BaseDoc && docID < s.meta.MaxDoc {
+			return s, true
+		}
+	}
+	return nil, false
+}
+
+// DeletedDocIDs returns the sorted union of every segment's deleted doc-ids.
+// Query execution filters matches against this set so a deleted document never
+// surfaces, even though its postings remain in an immutable segment until
+// compaction reaps them.
+func (ss *SegmentSet) DeletedDocIDs(kv KV) ([]uint32, error) {
+	var out []uint32
+	for _, s := range ss.segments {
+		d, err := LoadDeletes(kv, s.meta)
+		if err != nil {
+			return nil, err
+		}
+		if d.Empty() {
+			continue
+		}
+		out = d.AppendTo(out)
+	}
+	return out, nil
+}

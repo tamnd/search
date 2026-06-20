@@ -195,6 +195,123 @@ func readJSONL(r io.Reader) ([]map[string]any, error) {
 	return docs, nil
 }
 
+// cmdDelete soft-deletes documents by external id. One or more ids are given as
+// positional arguments; each is resolved to its current doc-id, marked deleted,
+// and dropped from the external-id map. A missing id is reported but does not fail
+// the batch. The postings stay in their immutable segment until a compaction reaps
+// them, so deletes are cheap and a later `sx compact` reclaims the space.
+func cmdDelete(args []string) int {
+	if len(args) < 2 {
+		return fail("usage: sx delete <file> <external-id>...")
+	}
+	path := args[0]
+	ids := args[1:]
+
+	db, err := openIndex(path, false)
+	if err != nil {
+		return fail("open %s: %v", path, err)
+	}
+	defer closeDB(db)
+
+	deleted, missing := 0, 0
+	for _, id := range ids {
+		ok, err := db.Delete(id)
+		if err != nil {
+			return fail("delete %s: %v", id, err)
+		}
+		if ok {
+			deleted++
+		} else {
+			missing++
+			_, _ = fmt.Fprintf(os.Stderr, "sx: id %q not found\n", id)
+		}
+	}
+	fmt.Printf("deleted %d document(s), %d not found\n", deleted, missing)
+	return 0
+}
+
+// cmdUpdate reindexes documents from JSONL, replacing any existing document with
+// the same external id. An update is a delete of the old document followed by a
+// fresh index of the new one, which is exactly what Index does when it sees a
+// repeated external id, so this is Index with replace-oriented reporting.
+func cmdUpdate(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx update <file> [--file docs.jsonl]")
+	}
+	path := args[0]
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	docFile := fs.String("file", "", "path to a JSONL document file (default stdin)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return fail("usage: sx update <file> [--file docs.jsonl]")
+	}
+
+	var in io.Reader = os.Stdin
+	if *docFile != "" {
+		f, err := os.Open(*docFile)
+		if err != nil {
+			return fail("open %s: %v", *docFile, err)
+		}
+		defer func() { _ = f.Close() }()
+		in = f
+	}
+	docs, err := readJSONL(in)
+	if err != nil {
+		return fail("read documents: %v", err)
+	}
+
+	db, err := openIndex(path, false)
+	if err != nil {
+		return fail("open %s: %v", path, err)
+	}
+	defer closeDB(db)
+
+	n, err := db.Index(docs)
+	if err != nil {
+		return fail("update: %v", err)
+	}
+	fmt.Printf("updated %d document(s)\n", n)
+	return 0
+}
+
+// cmdCompact runs compaction to merge segments and reclaim the space held by
+// deleted documents. By default it runs one tiered round; --all force-merges every
+// segment into one and reaps all tombstones at once.
+func cmdCompact(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx compact <file> [--all]")
+	}
+	path := args[0]
+	fs := flag.NewFlagSet("compact", flag.ContinueOnError)
+	all := fs.Bool("all", false, "force-merge every segment into one")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return fail("usage: sx compact <file> [--all]")
+	}
+
+	db, err := openIndex(path, false)
+	if err != nil {
+		return fail("open %s: %v", path, err)
+	}
+	defer closeDB(db)
+
+	var merged int
+	if *all {
+		merged, err = db.CompactAll()
+	} else {
+		merged, err = db.Compact()
+	}
+	if err != nil {
+		return fail("compact: %v", err)
+	}
+	fmt.Printf("merged %d segment(s)\n", merged)
+	return 0
+}
+
 // cmdGet fetches a stored document by internal doc-id (numeric positional) or by
 // external id (--id).
 func cmdGet(args []string) int {

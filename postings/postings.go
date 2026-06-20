@@ -155,6 +155,9 @@ func Open(docBlob, posBlob []byte) (*Reader, error) {
 // Count returns the number of documents in the postings list (the doc frequency).
 func (r *Reader) Count() int { return r.docCount }
 
+// Positional reports whether this list carries token positions.
+func (r *Reader) Positional() bool { return r.hasPos }
+
 // blockLen returns the document count of block i.
 func (r *Reader) blockLen(i int) int {
 	return min(r.docCount-i*BlockSize, BlockSize)

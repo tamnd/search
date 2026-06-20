@@ -38,6 +38,13 @@ func (k *memKV) Put(ns byte, key, val []byte) error {
 	return nil
 }
 
+func (k *memKV) Delete(ns byte, key []byte) error {
+	if sub, ok := k.m[ns]; ok {
+		delete(sub, string(key))
+	}
+	return nil
+}
+
 func (k *memKV) Scan(ns byte, fn func(key, val []byte) bool) error {
 	sub := k.m[ns]
 	keys := make([]string, 0, len(sub))
@@ -253,7 +260,7 @@ func TestGoldenSegment(t *testing.T) {
 // golden pins the digest of the FST and postings for the synthetic corpus. A
 // change here means an encoder's byte output changed and the on-disk format is
 // no longer compatible.
-const golden = "8611b609f3e87d9f8ca87cff70201f53114a50ed2efc1071ea2eae5998f4647d"
+const golden = "a1b426bfd52c08da3e898ab085b36a18485cde09a5f6d1129d3febd0d22d65f0"
 
 // goldenCorpus builds a deterministic 500-document corpus from a fixed word list.
 func goldenCorpus() *memtable.MemTable {

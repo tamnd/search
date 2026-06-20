@@ -62,14 +62,14 @@ func (se *Searcher) termSubs(field, term string, w *score.Weight) ([]scorer, err
 		if fr == nil {
 			continue
 		}
-		r, ok, err := fr.Postings(term)
+		r, maxFreq, minNorm, ok, err := fr.PostingsWithStats(term)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			continue
 		}
-		subs = append(subs, newTermScorer(r, w, fr))
+		subs = append(subs, newTermScorer(r, w, fr, maxFreq, minNorm))
 	}
 	return subs, nil
 }
@@ -98,7 +98,7 @@ func (se *Searcher) compileMatch(n *query.MatchQuery) (scorer, error) {
 	if n.Operator == query.Must {
 		return newAndScorer(subs), nil
 	}
-	return newOrScorer(subs, 1), nil
+	return newWandScorer(subs), nil
 }
 
 // compilePhrase analyzes the text and requires the terms to appear in order
@@ -142,7 +142,7 @@ func (se *Searcher) compilePhrase(n *query.MatchPhraseQuery) (scorer, error) {
 				ok = false
 				break
 			}
-			tss[i] = newTermScorer(r, weights[i], fr)
+			tss[i] = newTermScorer(r, weights[i], fr, 0, 0)
 		}
 		if !ok {
 			continue
@@ -180,7 +180,7 @@ func (se *Searcher) compilePrefix(field, prefix string, boost float32) (scorer, 
 				return nil, err
 			}
 			if ok {
-				children = append(children, newTermScorer(r, dummyWeight, fr))
+				children = append(children, newTermScorer(r, dummyWeight, fr, 0, 0))
 			}
 		}
 	}
@@ -215,7 +215,7 @@ func (se *Searcher) compileRange(n *query.RangeQuery) (scorer, error) {
 				return nil, err
 			}
 			if ok {
-				children = append(children, newTermScorer(r, dummyWeight, fr))
+				children = append(children, newTermScorer(r, dummyWeight, fr, 0, 0))
 			}
 		}
 	}

@@ -91,6 +91,22 @@ func (s *Store) Get(docID uint64) (map[string]any, bool, error) {
 	return m, true, nil
 }
 
+// deleterKV is the optional capability a backing KV exposes to remove a key.
+// catalog.Catalog satisfies it; backends that cannot delete simply keep the
+// block until it is rewritten.
+type deleterKV interface {
+	Delete(ns byte, key []byte) error
+}
+
+// Delete removes the document stored under docID. It is a no-op when the backing
+// KV cannot delete keys.
+func (s *Store) Delete(docID uint64) error {
+	if d, ok := s.kv.(deleterKV); ok {
+		return d.Delete(s.ns, blockKey(docID))
+	}
+	return nil
+}
+
 // blockKey is the big-endian uint64 catalog key for a block number. At S2 the
 // block number is the doc-id (one document per block).
 func blockKey(n uint64) []byte {

@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"math"
 	"sort"
 
 	"github.com/tamnd/search/postings"
@@ -31,20 +32,45 @@ type scorer interface {
 	cost() int
 }
 
+// maxScorer is a scorer that can bound its own score from above, the prerequisite
+// for WAND pruning. A term scorer and a chain of term scorers both qualify.
+type maxScorer interface {
+	scorer
+	// maxScore is the largest score the scorer can ever produce for a document.
+	maxScore() float32
+}
+
+// pruner is a scorer that can be told the smallest score still worth producing,
+// so it may skip documents that cannot beat the current top-k threshold. WAND
+// implements it; the wrappers forward the threshold so it survives a liveFilter
+// or boost in front of the disjunction.
+type pruner interface {
+	setMinScore(min float32)
+}
+
 // termScorer scores one term's postings in one segment field with a BM25 weight.
+// maxFreq and minNorm are the term's WAND bound in this segment (the largest term
+// frequency and shortest length observed), so maxScore is the largest BM25 score
+// the term can contribute to any document in the segment.
 type termScorer struct {
 	r       *postings.Reader
 	w       *score.Weight
 	fr      *segment.FieldReader
+	maxFreq uint32
+	minNorm byte
 	cur     uint32
 	curFreq uint32
 }
 
-func newTermScorer(r *postings.Reader, w *score.Weight, fr *segment.FieldReader) *termScorer {
-	return &termScorer{r: r, w: w, fr: fr}
+func newTermScorer(r *postings.Reader, w *score.Weight, fr *segment.FieldReader, maxFreq uint32, minNorm byte) *termScorer {
+	return &termScorer{r: r, w: w, fr: fr, maxFreq: maxFreq, minNorm: minNorm}
 }
 
 func (t *termScorer) docID() uint32 { return t.cur }
+
+// maxScore is the term's upper-bound BM25 contribution in this segment, used by
+// WAND to skip documents that cannot enter the top-k.
+func (t *termScorer) maxScore() float32 { return t.w.MaxScore(t.maxFreq, t.minNorm) }
 
 func (t *termScorer) next() (uint32, error) {
 	doc, freq, ok, err := t.r.Next()
@@ -139,6 +165,24 @@ func (c *chainScorer) cost() int {
 	return total
 }
 
+// maxScore is the largest BM25 contribution this term can make to any document
+// across its segments: the maximum of the per-segment upper bounds. A sub that
+// cannot bound itself forces an unbounded result, which disables WAND pruning for
+// the disjunction that holds it.
+func (c *chainScorer) maxScore() float32 {
+	var m float32
+	for _, s := range c.subs {
+		ms, ok := s.(maxScorer)
+		if !ok {
+			return float32(math.Inf(1))
+		}
+		if v := ms.maxScore(); v > m {
+			m = v
+		}
+	}
+	return m
+}
+
 // sliceScorer iterates an explicit sorted slice of doc-ids with a constant score,
 // used for match_all over the set of live documents.
 type sliceScorer struct {
@@ -215,6 +259,15 @@ func (b *boostScorer) next() (uint32, error)            { return b.inner.next() 
 func (b *boostScorer) advance(t uint32) (uint32, error) { return b.inner.advance(t) }
 func (b *boostScorer) score() float32                   { return b.factor * b.inner.score() }
 func (b *boostScorer) cost() int                        { return b.inner.cost() }
+
+// setMinScore forwards the threshold to the wrapped scorer in its own score space.
+// The boost multiplies the inner score, so the inner threshold is the outer one
+// divided by the factor.
+func (b *boostScorer) setMinScore(min float32) {
+	if p, ok := b.inner.(pruner); ok && b.factor > 0 {
+		p.setMinScore(min / b.factor)
+	}
+}
 
 // zeroScorer wraps a scorer and contributes no score (filter clauses).
 type zeroScorer struct{ inner scorer }
@@ -395,6 +448,214 @@ func (o *orScorer) cost() int {
 		total += c.cost()
 	}
 	return total
+}
+
+// wandScorer is a disjunction that prunes documents which cannot enter the top-k,
+// the WAND algorithm (doc 13 §1.6). Each child reports an upper bound on the score
+// it can contribute (maxScore). The collector pushes the current k-th best score
+// down through setMinScore; WAND sorts its children by doc-id, accumulates their
+// upper bounds, and finds the pivot, the first doc-id whose running bound sum can
+// beat the threshold. Doc-ids below the pivot cannot make the top-k, so the lagging
+// children skip straight to the pivot rather than visiting every document between.
+// With a zero threshold (the heap is not yet full) it degrades to a full
+// disjunction, so early results are exact. minShould is fixed at one; WAND is used
+// only where a single matching clause suffices.
+type wandScorer struct {
+	children []maxScorer
+	cur      uint32
+	minScore float32
+	started  bool
+}
+
+// newWandScorer builds a WAND disjunction over children. Every child must be able
+// to bound its score; if any cannot, it falls back to a plain disjunction so the
+// result stays correct (a missing bound would over-prune).
+func newWandScorer(children []scorer) scorer {
+	ms := make([]maxScorer, 0, len(children))
+	for _, c := range children {
+		m, ok := c.(maxScorer)
+		if !ok {
+			return newOrScorer(children, 1)
+		}
+		if math.IsInf(float64(m.maxScore()), 1) {
+			return newOrScorer(children, 1)
+		}
+		ms = append(ms, m)
+	}
+	return &wandScorer{children: ms}
+}
+
+func (w *wandScorer) docID() uint32 { return w.cur }
+
+func (w *wandScorer) setMinScore(min float32) { w.minScore = min }
+
+func (w *wandScorer) next() (uint32, error) {
+	if !w.started {
+		w.started = true
+		for _, c := range w.children {
+			if _, err := c.next(); err != nil {
+				return 0, err
+			}
+		}
+		return w.findCandidate()
+	}
+	for _, c := range w.children {
+		if c.docID() == w.cur {
+			if _, err := c.next(); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return w.findCandidate()
+}
+
+func (w *wandScorer) advance(target uint32) (uint32, error) {
+	if !w.started {
+		w.started = true
+		for _, c := range w.children {
+			if _, err := c.next(); err != nil {
+				return 0, err
+			}
+		}
+	}
+	for _, c := range w.children {
+		if c.docID() < target {
+			if _, err := c.advance(target); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return w.findCandidate()
+}
+
+// findCandidate returns the next doc-id that could enter the top-k, advancing the
+// children as WAND prescribes.
+func (w *wandScorer) findCandidate() (uint32, error) {
+	for {
+		sort.SliceStable(w.children, func(i, j int) bool {
+			return w.children[i].docID() < w.children[j].docID()
+		})
+		var sum float32
+		pivot := -1
+		for i, c := range w.children {
+			if c.docID() == noMore {
+				break
+			}
+			sum += c.maxScore()
+			if sum > w.minScore {
+				pivot = i
+				break
+			}
+		}
+		if pivot < 0 {
+			w.cur = noMore
+			return noMore, nil
+		}
+		pivotDoc := w.children[pivot].docID()
+		if pivotDoc == noMore {
+			w.cur = noMore
+			return noMore, nil
+		}
+		if w.children[0].docID() == pivotDoc {
+			w.cur = pivotDoc
+			return pivotDoc, nil
+		}
+		// A child before the pivot lags behind; skip it up to the pivot doc-id so
+		// the next round can either form a candidate there or move the pivot on.
+		for i := 0; i < pivot; i++ {
+			if w.children[i].docID() < pivotDoc {
+				if _, err := w.children[i].advance(pivotDoc); err != nil {
+					return 0, err
+				}
+				break
+			}
+		}
+	}
+}
+
+func (w *wandScorer) score() float32 {
+	var s float32
+	for _, c := range w.children {
+		if c.docID() == w.cur {
+			s += c.score()
+		}
+	}
+	return s
+}
+
+func (w *wandScorer) cost() int {
+	total := 0
+	for _, c := range w.children {
+		total += c.cost()
+	}
+	return total
+}
+
+// liveFilter wraps a scorer and drops any matched doc-id that is present in a
+// sorted set of deleted doc-ids. Deletes are soft: a deleted document keeps its
+// postings in an immutable segment until compaction, so the matched stream is
+// filtered here. The dead cursor only moves forward because the wrapped scorer
+// yields ascending doc-ids.
+type liveFilter struct {
+	inner scorer
+	dead  []uint32
+	di    int
+}
+
+func newLiveFilter(inner scorer, dead []uint32) scorer {
+	if len(dead) == 0 {
+		return inner
+	}
+	return &liveFilter{inner: inner, dead: dead}
+}
+
+// skipDead advances the wrapped scorer past any deleted doc-id, returning the
+// first live doc-id at or after d.
+func (f *liveFilter) skipDead(d uint32) (uint32, error) {
+	for d != noMore {
+		for f.di < len(f.dead) && f.dead[f.di] < d {
+			f.di++
+		}
+		if f.di < len(f.dead) && f.dead[f.di] == d {
+			var err error
+			d, err = f.inner.next()
+			if err != nil {
+				return 0, err
+			}
+			continue
+		}
+		return d, nil
+	}
+	return noMore, nil
+}
+
+func (f *liveFilter) docID() uint32 { return f.inner.docID() }
+
+func (f *liveFilter) next() (uint32, error) {
+	d, err := f.inner.next()
+	if err != nil {
+		return 0, err
+	}
+	return f.skipDead(d)
+}
+
+func (f *liveFilter) advance(target uint32) (uint32, error) {
+	d, err := f.inner.advance(target)
+	if err != nil {
+		return 0, err
+	}
+	return f.skipDead(d)
+}
+
+func (f *liveFilter) score() float32 { return f.inner.score() }
+func (f *liveFilter) cost() int      { return f.inner.cost() }
+
+// setMinScore forwards the top-k threshold to the wrapped scorer so deletion
+// filtering does not disable WAND pruning underneath it.
+func (f *liveFilter) setMinScore(min float32) {
+	if p, ok := f.inner.(pruner); ok {
+		p.setMinScore(min)
+	}
 }
 
 // scoreAt advances every child to >= target and returns the summed score and the
