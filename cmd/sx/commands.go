@@ -347,6 +347,89 @@ func cmdSchema(args []string) int {
 	return printJSON(out)
 }
 
+// segmentJSON is the JSON view of one flushed segment.
+type segmentJSON struct {
+	ID       uint64      `json:"id"`
+	DocCount uint32      `json:"doc_count"`
+	MaxDoc   uint32      `json:"max_doc"`
+	Fields   []fieldJSON `json:"fields"`
+}
+
+// fieldJSON is the JSON view of one field within a segment.
+type fieldJSON struct {
+	Name             string `json:"name"`
+	TermCount        uint64 `json:"term_count"`
+	DocCount         uint32 `json:"doc_count"`
+	SumDocFreq       uint64 `json:"sum_doc_freq"`
+	SumTotalTermFreq uint64 `json:"sum_total_term_freq"`
+	Positional       bool   `json:"positional"`
+}
+
+// cmdInspect prints the segment structure of an index: each segment with its
+// document count and per-field term and posting statistics.
+func cmdInspect(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx inspect <file> [--format table|json]")
+	}
+	path := args[0]
+	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
+	format := fs.String("format", "table", "output format: table|json")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return fail("usage: sx inspect <file> [--format table|json]")
+	}
+
+	db, err := openIndex(path, true)
+	if err != nil {
+		return fail("open %s: %v", path, err)
+	}
+	defer closeDB(db)
+
+	segs, err := db.Segments()
+	if err != nil {
+		return fail("inspect: %v", err)
+	}
+
+	if *format == "json" {
+		out := make([]segmentJSON, 0, len(segs))
+		for _, s := range segs {
+			sj := segmentJSON{ID: s.ID, DocCount: s.DocCount, MaxDoc: s.MaxDoc}
+			for _, f := range s.Fields {
+				sj.Fields = append(sj.Fields, fieldJSON{
+					Name: f.Name, TermCount: f.TermCount, DocCount: f.DocCount,
+					SumDocFreq: f.SumDocFreq, SumTotalTermFreq: f.SumTotalTermFreq,
+					Positional: f.Positional,
+				})
+			}
+			out = append(out, sj)
+		}
+		return printJSON(out)
+	}
+	return printInspectTable(segs)
+}
+
+// printInspectTable prints a human-readable segment and field summary.
+func printInspectTable(segs []search.SegmentInfo) int {
+	w := bufio.NewWriter(os.Stdout)
+	defer func() { _ = w.Flush() }()
+	if len(segs) == 0 {
+		_, _ = fmt.Fprintln(w, "no segments")
+		return 0
+	}
+	for _, s := range segs {
+		_, _ = fmt.Fprintf(w, "segment %d: %d doc(s), max_doc %d\n", s.ID, s.DocCount, s.MaxDoc)
+		_, _ = fmt.Fprintf(w, "  %-20s %-8s %-8s %-8s %-8s %s\n",
+			"field", "terms", "docs", "df", "ttf", "positional")
+		for _, f := range s.Fields {
+			_, _ = fmt.Fprintf(w, "  %-20s %-8d %-8d %-8d %-8d %t\n",
+				f.Name, f.TermCount, f.DocCount, f.SumDocFreq, f.SumTotalTermFreq, f.Positional)
+		}
+	}
+	return 0
+}
+
 // printJSON writes v as indented JSON to stdout.
 func printJSON(v any) int {
 	enc := json.NewEncoder(os.Stdout)

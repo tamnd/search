@@ -80,6 +80,50 @@ func TestSXSchema(t *testing.T) {
 	}
 }
 
+func TestSXInspect(t *testing.T) {
+	dir := t.TempDir()
+	idx := filepath.Join(dir, "t.sx")
+	schemaPath := writeFile(t, dir, "schema.json",
+		`{"fields":[{"name":"title","type":"text"},{"name":"tag","type":"keyword"}]}`)
+	if code := cmdCreate([]string{idx, "--schema", schemaPath}); code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	docs := `{"_id":"a","title":"quick brown fox","tag":"x"}
+{"_id":"b","title":"lazy dog","tag":"x"}`
+	docPath := writeFile(t, dir, "docs.jsonl", docs)
+	if code := cmdIndex([]string{idx, "--file", docPath}); code != 0 {
+		t.Fatalf("index exit %d", code)
+	}
+
+	out := captureStdout(t, func() int { return cmdInspect([]string{idx, "--format", "json"}) })
+	var segs []segmentJSON
+	if err := json.Unmarshal([]byte(out), &segs); err != nil {
+		t.Fatalf("inspect output not json: %v\n%s", err, out)
+	}
+	if len(segs) != 1 || segs[0].DocCount != 2 {
+		t.Fatalf("segments = %+v", segs)
+	}
+	var titleTerms uint64
+	for _, f := range segs[0].Fields {
+		if f.Name == "title" {
+			titleTerms = f.TermCount
+		}
+		if f.Name == "tag" && f.TermCount != 1 {
+			t.Fatalf("tag term count = %d, want 1", f.TermCount)
+		}
+	}
+	// quick, brown, fox, lazy, dog
+	if titleTerms != 5 {
+		t.Fatalf("title term count = %d, want 5", titleTerms)
+	}
+
+	// Table output names the segment.
+	out = captureStdout(t, func() int { return cmdInspect([]string{idx}) })
+	if !strings.Contains(out, "segment 1") {
+		t.Fatalf("table output = %q", out)
+	}
+}
+
 func TestSXAnalyze(t *testing.T) {
 	dir := t.TempDir()
 	idx := filepath.Join(dir, "t.sx")

@@ -29,6 +29,8 @@ const (
 	NSAnalyzer        byte = 0x0B // serialized custom analyzer configs (doc 07 §7)
 	NSDocStore        byte = 0x0C // stored-field document blocks (doc 06 §6)
 	NSExternalID      byte = 0x0D // external id -> internal doc id (doc 06 §1.5)
+	NSSegFST          byte = 0x0E // per-segment, per-field term dictionary FST (doc 08)
+	NSSegPostings     byte = 0x0F // per-segment, per-field postings records (doc 09)
 )
 
 // Catalog is a namespaced view of one B+tree. It mutates through the bound root

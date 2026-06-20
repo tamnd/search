@@ -101,30 +101,41 @@ func docCount(c *catalog.Catalog) (uint64, error) {
 // overwrites it (upsert) and reuses its internal doc-id. A document without the
 // primary-key field is assigned a fresh external id equal to its new doc-id.
 //
-// At S2 indexing persists the stored document and the external-id mapping; the
-// inverted index that makes documents searchable is built in later milestones.
+// Each Index call persists the stored documents and the external-id mappings and
+// then flushes one immutable inverted-index segment over the batch: every
+// indexed text and keyword field is analyzed into terms and written to the
+// segment's term dictionary and postings (doc 10 §4-5). Re-indexing a document
+// writes fresh postings in the new segment; superseding its stale postings in an
+// older segment is the deletion concern of a later milestone.
 func (db *DB) Index(docs []map[string]any) (int, error) {
 	n := 0
 	err := db.Update(func(t *Txn) error {
 		c := t.Catalog()
-		if _, ok, err := loadSchema(c); err != nil {
-			return err
-		} else if !ok {
-			return ErrNoSchema
-		}
-		s, _, err := loadSchema(c)
+		s, ok, err := loadSchema(c)
 		if err != nil {
 			return err
 		}
+		if !ok {
+			return ErrNoSchema
+		}
 		store := docstore.New(c, catalog.NSDocStore)
 		idField := s.PrimaryKey()
+
+		// Persist every document first, collecting the (doc-id, body) pairs so the
+		// memtable can be built in ascending doc-id order (the posting-list
+		// invariant), independent of the order upserts resolve to.
+		entries := make([]docEntry, 0, len(docs))
+		var maxDoc uint64
 		for _, doc := range docs {
-			if err := indexOne(c, store, idField, doc); err != nil {
+			docID, err := indexOne(c, store, idField, doc)
+			if err != nil {
 				return err
 			}
+			entries = append(entries, docEntry{docID: docID, doc: doc})
+			maxDoc = max(maxDoc, docID)
 			n++
 		}
-		return nil
+		return flushBatch(c, s, entries, maxDoc)
 	})
 	if err != nil {
 		return 0, err
@@ -132,15 +143,22 @@ func (db *DB) Index(docs []map[string]any) (int, error) {
 	return n, nil
 }
 
+// docEntry pairs a resolved internal doc-id with its document body.
+type docEntry struct {
+	docID uint64
+	doc   map[string]any
+}
+
 // indexOne writes a single document: it resolves or assigns the doc-id from the
-// external id, records the external-id mapping, and stores the document body.
-func indexOne(c *catalog.Catalog, store *docstore.Store, idField string, doc map[string]any) error {
+// external id, records the external-id mapping, and stores the document body. It
+// returns the internal doc-id the document was stored under.
+func indexOne(c *catalog.Catalog, store *docstore.Store, idField string, doc map[string]any) (uint64, error) {
 	extID := externalID(doc, idField)
 
 	var docID uint64
 	if extID != "" {
 		if b, ok, err := c.Get(catalog.NSExternalID, []byte(extID)); err != nil {
-			return err
+			return 0, err
 		} else if ok {
 			docID = binary.BigEndian.Uint64(b)
 		}
@@ -148,7 +166,7 @@ func indexOne(c *catalog.Catalog, store *docstore.Store, idField string, doc map
 	if docID == 0 {
 		id, err := nextDocID(c)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		docID = id
 		if extID == "" {
@@ -160,9 +178,9 @@ func indexOne(c *catalog.Catalog, store *docstore.Store, idField string, doc map
 	var idb [8]byte
 	binary.BigEndian.PutUint64(idb[:], docID)
 	if err := c.Put(catalog.NSExternalID, []byte(extID), idb[:]); err != nil {
-		return err
+		return 0, err
 	}
-	return store.Put(docID, doc)
+	return docID, store.Put(docID, doc)
 }
 
 // externalID returns the external id of a document as a string: the value of the
