@@ -31,6 +31,16 @@ func run(args []string) int {
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return 0
+	case "create":
+		return cmdCreate(args[1:])
+	case "index":
+		return cmdIndex(args[1:])
+	case "get":
+		return cmdGet(args[1:])
+	case "analyze":
+		return cmdAnalyze(args[1:])
+	case "schema":
+		return cmdSchema(args[1:])
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "sx: unknown subcommand %q\n\n", args[0])
 		usage(os.Stderr)
@@ -71,7 +81,12 @@ commands:
   version    print the CLI, format, and build versions
   help       show this help
 
-  index      index documents into a .sx file        (not yet implemented)
+  create     create a .sx file and set its schema
+  index      index documents from JSONL into a .sx file
+  get        fetch a stored document by id
+  analyze    run an analyzer over text
+  schema     print the schema of a .sx file
+
   search     run a query against a .sx file          (not yet implemented)
   inspect    dump the structure of a .sx file        (not yet implemented)
   compact    compact and reclaim space               (not yet implemented)
