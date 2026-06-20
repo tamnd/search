@@ -1,0 +1,10 @@
+/dist/
+/bin/
+*.out
+*.test
+*.sx
+*.sx-wal
+.DS_Store
+
+# the committed golden fixture is the one .sx we do track
+!pager/testdata/golden.sx
