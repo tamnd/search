@@ -10,6 +10,8 @@
 package search
 
 import (
+	"sync"
+
 	"github.com/tamnd/search/determ"
 	"github.com/tamnd/search/page"
 	"github.com/tamnd/search/pager"
@@ -20,10 +22,28 @@ import (
 // FormatVersion is the on-disk format version this build reads and writes.
 const FormatVersion = page.FormatVersion
 
-// DB is an open search index.
+// DB is an open search index. It serializes write transactions with writeMu
+// (the single-writer discipline) and tracks live readers and the page freelist
+// under rmu so copy-on-write pages are reclaimed only once no reader can still
+// observe them (the MVCC contract, doc 04 §10, doc 05 §7).
 type DB struct {
 	path string
 	pgr  *pager.Pager
+
+	writeMu sync.Mutex // serializes write transactions
+
+	rmu         sync.Mutex     // guards readers, freelist, pendingFree, trunkPages
+	readers     map[uint64]int // active read snapshots: txn id -> refcount
+	freelist    []page.PageID  // pages safe to reuse now
+	pendingFree []pendingFree  // pages freed but still pinned by a reader
+	trunkPages  []page.PageID  // freelist trunk pages of the live chain
+}
+
+// pendingFree is a page freed by the transaction that produced version, not yet
+// reusable until no reader pins a version older than it.
+type pendingFree struct {
+	id      page.PageID
+	version uint64
 }
 
 // Options configure how an index is opened. The zero value is the default: the
@@ -74,7 +94,12 @@ func Open(path string, opt Options) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DB{path: path, pgr: pgr}, nil
+	db := &DB{path: path, pgr: pgr, readers: make(map[uint64]int)}
+	if err := db.loadFreelist(); err != nil {
+		_ = pgr.Close()
+		return nil, err
+	}
+	return db, nil
 }
 
 // Path returns the index file path.
