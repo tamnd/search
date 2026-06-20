@@ -33,6 +33,7 @@ import (
 type KV interface {
 	Get(ns byte, key []byte) ([]byte, bool, error)
 	Put(ns byte, key, val []byte) error
+	Delete(ns byte, key []byte) error
 	Scan(ns byte, fn func(key, val []byte) bool) error
 }
 

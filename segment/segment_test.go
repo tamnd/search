@@ -38,6 +38,13 @@ func (k *memKV) Put(ns byte, key, val []byte) error {
 	return nil
 }
 
+func (k *memKV) Delete(ns byte, key []byte) error {
+	if sub, ok := k.m[ns]; ok {
+		delete(sub, string(key))
+	}
+	return nil
+}
+
 func (k *memKV) Scan(ns byte, fn func(key, val []byte) bool) error {
 	sub := k.m[ns]
 	keys := make([]string, 0, len(sub))
