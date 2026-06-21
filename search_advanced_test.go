@@ -131,6 +131,49 @@ func TestSpanNearQuery(t *testing.T) {
 	}
 }
 
+// TestSpanNearAdvancedSkips drives the span scorer through advance() rather than
+// next() by making it a must clause alongside a sparse marker term. The marker
+// is the lower-cost conjunct so it leads the conjunction and advances the span
+// scorer onto a document whose positions do not satisfy the span. The scorer
+// must skip that document and continue, not re-advance to the same target and
+// spin (the bug fixed in spanNearScorer.find).
+func TestSpanNearAdvancedSkips(t *testing.T) {
+	docs := []map[string]any{
+		// Span-only documents (no marker): keep the span scorer's cost high so the
+		// marker term leads the conjunction.
+		{"_id": "s0", "title": "quick brown alpha"},
+		{"_id": "s1", "title": "quick brown beta"},
+		{"_id": "s2", "title": "quick brown gamma"},
+		{"_id": "s3", "title": "quick brown delta"},
+		{"_id": "s4", "title": "quick brown epsilon"},
+		// Marked, but the span (slop 0, in order) fails because of the gap.
+		{"_id": "m0", "title": "quick green brown mark"},
+		// Marked and the span holds.
+		{"_id": "m1", "title": "quick brown mark"},
+	}
+	db := indexAdv(t, docs)
+	defer mustClose(t, db)
+
+	span := query.SpanNear("title", []string{"quick", "brown"}, 0)
+	q := query.Bool().
+		MustClause(query.Term("title", "mark")).
+		MustClause(span)
+	hits, err := db.Search(q, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := hitSet(hits)
+	if !got["m1"] {
+		t.Fatalf("expected m1 (marked, span holds), got %v", extIDs(hits))
+	}
+	if got["m0"] {
+		t.Fatalf("m0 has a gap and must not satisfy slop 0, got %v", extIDs(hits))
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected exactly m1, got %v", extIDs(hits))
+	}
+}
+
 func TestGeoDistance_Correctness(t *testing.T) {
 	// Build a ring of points at increasing distance from a center and verify the
 	// query keeps exactly those within the radius, matching a reference haversine.
