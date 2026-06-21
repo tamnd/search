@@ -242,6 +242,9 @@ func (se *Searcher) weightFor(field, term string, boost float32) (*score.Weight,
 // schemaView adapts the index schema to the query.Schema interface.
 type schemaView struct{ s *schema.Schema }
 
+// FieldType implements query.Schema by looking the field up in the index schema.
+// When no schema is available it reports the field as present so field-existence
+// checks are skipped.
 func (v schemaView) FieldType(name string) (string, bool) {
 	if v.s == nil {
 		return "", true // no schema available: skip field-existence checks

@@ -440,6 +440,8 @@ func finiteScore(s float32) float32 {
 // dense-vector queries in this package.
 type qSchema struct{ s *schema.Schema }
 
+// FieldType implements query.Schema by looking the field up in the index schema,
+// reporting its type and whether it exists.
 func (v qSchema) FieldType(name string) (string, bool) {
 	f, ok := v.s.Lookup(name)
 	if !ok {

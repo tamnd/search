@@ -98,11 +98,19 @@ func openSorted(blob []byte) (*sortedColumn, error) {
 	return c, nil
 }
 
-func (c *sortedColumn) Kind() ColumnKind       { return KindSorted }
-func (c *sortedColumn) DocCount() uint32       { return c.docCount }
-func (c *sortedColumn) HasValue(i uint32) bool { return c.pres.has(i) }
-func (c *sortedColumn) OrdCount() uint32       { return c.ordCount }
+// Kind reports the column's structural kind, KindSorted.
+func (c *sortedColumn) Kind() ColumnKind { return KindSorted }
 
+// DocCount returns the number of documents the column spans.
+func (c *sortedColumn) DocCount() uint32 { return c.docCount }
+
+// HasValue reports whether doc index i has a value.
+func (c *sortedColumn) HasValue(i uint32) bool { return c.pres.has(i) }
+
+// OrdCount returns the number of distinct ordinals in the dictionary.
+func (c *sortedColumn) OrdCount() uint32 { return c.ordCount }
+
+// OrdAt returns the ordinal for doc index i, or -1 for a missing doc.
 func (c *sortedColumn) OrdAt(i uint32) int32 {
 	if !c.pres.has(i) {
 		return -1
@@ -110,6 +118,7 @@ func (c *sortedColumn) OrdAt(i uint32) int32 {
 	return int32(unpackSingle(c.packed, c.bw, i))
 }
 
+// LookupOrd returns the keyword bytes for an ordinal.
 func (c *sortedColumn) LookupOrd(ord uint32) []byte { return c.dict.lookup(ord) }
 
 // buildOrdDict returns the sorted distinct non-nil values and a map from value

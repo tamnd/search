@@ -81,10 +81,13 @@ func openGeo(blob []byte) (*geoColumn, error) {
 	return &geoColumn{numericColumn: n}, nil
 }
 
+// Kind reports the column's structural kind, KindGeoPoint.
 func (c *geoColumn) Kind() ColumnKind { return KindGeoPoint }
 
+// Morton returns the raw 64-bit Morton code stored for doc index i.
 func (c *geoColumn) Morton(i uint32) uint64 { return uint64(c.Int64(i)) }
 
+// LatLon returns the latitude and longitude decoded from doc index i's Morton code.
 func (c *geoColumn) LatLon(i uint32) (lat, lon float64) {
 	return DecodeLatLon(c.Morton(i))
 }

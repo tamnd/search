@@ -19,13 +19,19 @@ func Fuzzy(field, term string) *FuzzyQuery {
 	return &FuzzyQuery{Field: field, Term: term, AutoEdits: true}
 }
 
-func (*FuzzyQuery) queryNode()       {}
+func (*FuzzyQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *FuzzyQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *FuzzyQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires a term, rejects a negative edit distance, and checks the field exists.
 func (q *FuzzyQuery) Validate(s Schema) error {
 	if q.Term == "" {
 		return &Error{Msg: "fuzzy query needs a term"}
@@ -35,6 +41,8 @@ func (q *FuzzyQuery) Validate(s Schema) error {
 	}
 	return requireField(s, q.Field, "fuzzy")
 }
+
+// Rewrite returns the node unchanged.
 func (q *FuzzyQuery) Rewrite() Query { return q }
 
 // WildcardQuery matches documents whose field has a term matching a glob pattern
@@ -51,19 +59,27 @@ func Wildcard(field, pattern string) *WildcardQuery {
 	return &WildcardQuery{Field: field, Pattern: pattern}
 }
 
-func (*WildcardQuery) queryNode()       {}
+func (*WildcardQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *WildcardQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *WildcardQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires a pattern and checks the field exists when a schema is given.
 func (q *WildcardQuery) Validate(s Schema) error {
 	if q.Pattern == "" {
 		return &Error{Msg: "wildcard query needs a pattern"}
 	}
 	return requireField(s, q.Field, "wildcard")
 }
+
+// Rewrite returns the node unchanged.
 func (q *WildcardQuery) Rewrite() Query { return q }
 
 // RegexpQuery matches documents whose field has a term fully matching a Go
@@ -81,13 +97,19 @@ func Regexp(field, pattern string) *RegexpQuery {
 	return &RegexpQuery{Field: field, Pattern: pattern}
 }
 
-func (*RegexpQuery) queryNode()       {}
+func (*RegexpQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *RegexpQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *RegexpQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires a pattern, checks it compiles, and checks the field exists.
 func (q *RegexpQuery) Validate(s Schema) error {
 	if q.Pattern == "" {
 		return &Error{Msg: "regexp query needs a pattern"}
@@ -97,6 +119,8 @@ func (q *RegexpQuery) Validate(s Schema) error {
 	}
 	return requireField(s, q.Field, "regexp")
 }
+
+// Rewrite returns the node unchanged.
 func (q *RegexpQuery) Rewrite() Query { return q }
 
 // GeoDistanceQuery matches documents whose geo_point field lies within Meters of
@@ -115,13 +139,19 @@ func GeoDistance(field string, lat, lon, meters float64) *GeoDistanceQuery {
 	return &GeoDistanceQuery{Field: field, Lat: lat, Lon: lon, Meters: meters}
 }
 
-func (*GeoDistanceQuery) queryNode()       {}
+func (*GeoDistanceQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *GeoDistanceQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *GeoDistanceQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires a positive radius, an in-range center, and a geo_point field.
 func (q *GeoDistanceQuery) Validate(s Schema) error {
 	if q.Meters <= 0 {
 		return &Error{Msg: "geo_distance needs a positive distance"}
@@ -139,6 +169,8 @@ func (q *GeoDistanceQuery) Validate(s Schema) error {
 	}
 	return nil
 }
+
+// Rewrite returns the node unchanged.
 func (q *GeoDistanceQuery) Rewrite() Query { return q }
 
 // SpanNearQuery matches documents where the given terms appear in the field
@@ -158,13 +190,19 @@ func SpanNear(field string, terms []string, slop int) *SpanNearQuery {
 	return &SpanNearQuery{Field: field, Terms: terms, Slop: slop, InOrder: true}
 }
 
-func (*SpanNearQuery) queryNode()       {}
+func (*SpanNearQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *SpanNearQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *SpanNearQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires at least one term, rejects a negative slop, and checks the field exists.
 func (q *SpanNearQuery) Validate(s Schema) error {
 	if len(q.Terms) == 0 {
 		return &Error{Msg: "span_near needs at least one term"}
@@ -174,4 +212,6 @@ func (q *SpanNearQuery) Validate(s Schema) error {
 	}
 	return requireField(s, q.Field, "span_near")
 }
+
+// Rewrite returns the node unchanged.
 func (q *SpanNearQuery) Rewrite() Query { return q }

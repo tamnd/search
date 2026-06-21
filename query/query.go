@@ -68,16 +68,24 @@ type TermQuery struct {
 // Term builds a TermQuery.
 func Term(field, term string) *TermQuery { return &TermQuery{Field: field, Term: term} }
 
-func (*TermQuery) queryNode()       {}
+func (*TermQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *TermQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *TermQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate checks that the field is set and, when a schema is given, exists.
 func (q *TermQuery) Validate(s Schema) error {
 	return requireField(s, q.Field, "term")
 }
+
+// Rewrite returns the node unchanged; a term query has no canonical form to fold.
 func (q *TermQuery) Rewrite() Query { return q }
 
 // MatchQuery analyzes its text with the field's analyzer at plan time and
@@ -94,15 +102,23 @@ func Match(field, text string) *MatchQuery {
 	return &MatchQuery{Field: field, Text: text, Operator: Should}
 }
 
-func (*MatchQuery) queryNode()       {}
+func (*MatchQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *MatchQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *MatchQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate checks that the field is set and, when a schema is given, exists.
 func (q *MatchQuery) Validate(s Schema) error { return requireField(s, q.Field, "match") }
-func (q *MatchQuery) Rewrite() Query          { return q }
+
+// Rewrite returns the node unchanged; analysis happens at plan time.
+func (q *MatchQuery) Rewrite() Query { return q }
 
 // MatchPhraseQuery requires the analyzed tokens to appear in order within slop
 // positions of each other.
@@ -118,19 +134,27 @@ func Phrase(field, text string) *MatchPhraseQuery {
 	return &MatchPhraseQuery{Field: field, Text: text}
 }
 
-func (*MatchPhraseQuery) queryNode()       {}
+func (*MatchPhraseQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *MatchPhraseQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *MatchPhraseQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate rejects a negative slop and checks the field exists when a schema is given.
 func (q *MatchPhraseQuery) Validate(s Schema) error {
 	if q.Slop < 0 {
 		return &Error{Msg: "phrase slop must be non-negative"}
 	}
 	return requireField(s, q.Field, "match_phrase")
 }
+
+// Rewrite returns the node unchanged; analysis happens at plan time.
 func (q *MatchPhraseQuery) Rewrite() Query { return q }
 
 // PrefixQuery matches documents whose field has a term beginning with Prefix.
@@ -145,15 +169,23 @@ func Prefix(field, prefix string) *PrefixQuery {
 	return &PrefixQuery{Field: field, Prefix: prefix}
 }
 
-func (*PrefixQuery) queryNode()       {}
+func (*PrefixQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *PrefixQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *PrefixQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate checks that the field is set and, when a schema is given, exists.
 func (q *PrefixQuery) Validate(s Schema) error { return requireField(s, q.Field, "prefix") }
-func (q *PrefixQuery) Rewrite() Query          { return q }
+
+// Rewrite returns the node unchanged; a prefix query has no canonical form to fold.
+func (q *PrefixQuery) Rewrite() Query { return q }
 
 // RangeQuery matches documents whose field value falls in [Lower, Upper], with
 // the inclusivity of each end configurable. An empty bound is open. The bounds
@@ -179,19 +211,27 @@ func Range(field, lower, upper string, includeLower, includeUpper bool) *RangeQu
 	}
 }
 
-func (*RangeQuery) queryNode()       {}
+func (*RangeQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *RangeQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *RangeQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires at least one bound and checks the field exists when a schema is given.
 func (q *RangeQuery) Validate(s Schema) error {
 	if q.Lower == "" && q.Upper == "" {
 		return &Error{Msg: "range needs at least one bound"}
 	}
 	return requireField(s, q.Field, "range")
 }
+
+// Rewrite returns the node unchanged; bound encoding happens at plan time.
 func (q *RangeQuery) Rewrite() Query { return q }
 
 // MatchAllQuery matches every document with a constant score of 1 before boost.
@@ -200,15 +240,23 @@ type MatchAllQuery struct{ base }
 // MatchAll builds a MatchAllQuery.
 func MatchAll() *MatchAllQuery { return &MatchAllQuery{} }
 
-func (*MatchAllQuery) queryNode()       {}
+func (*MatchAllQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *MatchAllQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *MatchAllQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate always succeeds; match-all references no field.
 func (q *MatchAllQuery) Validate(Schema) error { return nil }
-func (q *MatchAllQuery) Rewrite() Query        { return q }
+
+// Rewrite returns the node unchanged.
+func (q *MatchAllQuery) Rewrite() Query { return q }
 
 // MatchNoneQuery matches no document.
 type MatchNoneQuery struct{ base }
@@ -216,15 +264,23 @@ type MatchNoneQuery struct{ base }
 // MatchNone builds a MatchNoneQuery.
 func MatchNone() *MatchNoneQuery { return &MatchNoneQuery{} }
 
-func (*MatchNoneQuery) queryNode()       {}
+func (*MatchNoneQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *MatchNoneQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *MatchNoneQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate always succeeds; match-none references no field.
 func (q *MatchNoneQuery) Validate(Schema) error { return nil }
-func (q *MatchNoneQuery) Rewrite() Query        { return q }
+
+// Rewrite returns the node unchanged.
+func (q *MatchNoneQuery) Rewrite() Query { return q }
 
 // Clause is one sub-query of a BoolQuery together with how it must occur.
 type Clause struct {
@@ -252,12 +308,17 @@ func (q *BoolQuery) Add(o Occur, sub Query) *BoolQuery {
 	return q
 }
 
-// MustClause, ShouldClause, MustNotClause, and FilterClause are convenience
-// adders.
-func (q *BoolQuery) MustClause(sub Query) *BoolQuery    { return q.Add(Must, sub) }
-func (q *BoolQuery) ShouldClause(sub Query) *BoolQuery  { return q.Add(Should, sub) }
+// MustClause adds sub as a Must clause and returns the query for chaining.
+func (q *BoolQuery) MustClause(sub Query) *BoolQuery { return q.Add(Must, sub) }
+
+// ShouldClause adds sub as a Should clause and returns the query for chaining.
+func (q *BoolQuery) ShouldClause(sub Query) *BoolQuery { return q.Add(Should, sub) }
+
+// MustNotClause adds sub as a MustNot clause and returns the query for chaining.
 func (q *BoolQuery) MustNotClause(sub Query) *BoolQuery { return q.Add(MustNot, sub) }
-func (q *BoolQuery) FilterClause(sub Query) *BoolQuery  { return q.Add(Filter, sub) }
+
+// FilterClause adds sub as a Filter clause and returns the query for chaining.
+func (q *BoolQuery) FilterClause(sub Query) *BoolQuery { return q.Add(Filter, sub) }
 
 // SetMinimumShouldMatch sets the minimum number of should clauses that must
 // match.
@@ -290,13 +351,19 @@ func (q *BoolQuery) EffectiveMinShould() int {
 	return 0
 }
 
-func (*BoolQuery) queryNode()       {}
+func (*BoolQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *BoolQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *BoolQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires at least one clause and validates each one against the schema.
 func (q *BoolQuery) Validate(s Schema) error {
 	if len(q.Clauses) == 0 {
 		return &Error{Msg: "bool query has no clauses"}
@@ -343,4 +410,5 @@ func requireField(s Schema, field, qtype string) error {
 // Error is a query validation or parse error.
 type Error struct{ Msg string }
 
+// Error returns the message prefixed with "query: ".
 func (e *Error) Error() string { return "query: " + e.Msg }

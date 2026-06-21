@@ -111,10 +111,16 @@ func openNumeric(blob []byte) (*numericColumn, error) {
 	return c, nil
 }
 
-func (c *numericColumn) Kind() ColumnKind       { return KindNumeric }
-func (c *numericColumn) DocCount() uint32       { return c.docCount }
+// Kind reports the column's structural kind, KindNumeric.
+func (c *numericColumn) Kind() ColumnKind { return KindNumeric }
+
+// DocCount returns the number of documents the column spans.
+func (c *numericColumn) DocCount() uint32 { return c.docCount }
+
+// HasValue reports whether doc index i has a value.
 func (c *numericColumn) HasValue(i uint32) bool { return c.pres.has(i) }
 
+// Int64 returns the stored value for doc index i, or 0 for a missing doc.
 func (c *numericColumn) Int64(i uint32) int64 {
 	if !c.pres.has(i) {
 		return 0
@@ -127,6 +133,8 @@ func (c *numericColumn) Int64(i uint32) int64 {
 	return blockValueAt(c.blocks[b], within)
 }
 
+// Float64 returns the value decoded from the sortable-float transform, or the
+// plain int64 value as a float64 for a raw-int column.
 func (c *numericColumn) Float64(i uint32) float64 {
 	v := c.Int64(i)
 	if c.encoding == encSortable {

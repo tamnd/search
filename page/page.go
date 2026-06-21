@@ -58,27 +58,48 @@ type PageID uint64
 type PageType uint8
 
 const (
-	PageMeta           PageType = 0x01 // a meta page (pages 1 and 2)
-	PageBTreeInterior  PageType = 0x02 // interior node of the catalog B+tree
-	PageBTreeLeaf      PageType = 0x03 // leaf node of the catalog B+tree
-	PageFreelistTrunk  PageType = 0x04 // freelist trunk page
-	PageFreelistLeaf   PageType = 0x05 // freelist leaf page
-	PageOverflowHead   PageType = 0x06 // head of an overflow chain
-	PageOverflowCont   PageType = 0x07 // continuation of an overflow chain
-	PageSegmentExtent  PageType = 0x08 // first page of a segment extent
-	PageExtentCont     PageType = 0x09 // continuation of a segment extent
-	PageFSTBlock       PageType = 0x0A // FST block (term dictionary)
-	PagePostingsBlock  PageType = 0x0B // postings block
-	PagePositionsBlock PageType = 0x0C // positions block
-	PageDocValuesBlock PageType = 0x0D // doc-values column block
-	PageDocStoreBlock  PageType = 0x0E // stored-field / doc-store block
-	PageHNSWNodeBlock  PageType = 0x0F // HNSW graph node block
-	PageWALFrame       PageType = 0x10 // inline WAL frame page
-	PageRoaringBlock   PageType = 0x11 // roaring bitmap block (live-doc filter)
-	PageSkipList       PageType = 0x12 // skip-list index block
-	PageCompactionTomb PageType = 0x13 // transient compaction tombstone
-	PageReserved       PageType = 0xFE // reserved for pager internal use
-	PageZero           PageType = 0xFF // uninitialized / zeroed page
+	// PageMeta is a meta page (pages 1 and 2).
+	PageMeta PageType = 0x01
+	// PageBTreeInterior is an interior node of the catalog B+tree.
+	PageBTreeInterior PageType = 0x02
+	// PageBTreeLeaf is a leaf node of the catalog B+tree.
+	PageBTreeLeaf PageType = 0x03
+	// PageFreelistTrunk is a freelist trunk page.
+	PageFreelistTrunk PageType = 0x04
+	// PageFreelistLeaf is a freelist leaf page.
+	PageFreelistLeaf PageType = 0x05
+	// PageOverflowHead is the head of an overflow chain.
+	PageOverflowHead PageType = 0x06
+	// PageOverflowCont is a continuation of an overflow chain.
+	PageOverflowCont PageType = 0x07
+	// PageSegmentExtent is the first page of a segment extent.
+	PageSegmentExtent PageType = 0x08
+	// PageExtentCont is a continuation of a segment extent.
+	PageExtentCont PageType = 0x09
+	// PageFSTBlock is an FST block (term dictionary).
+	PageFSTBlock PageType = 0x0A
+	// PagePostingsBlock is a postings block.
+	PagePostingsBlock PageType = 0x0B
+	// PagePositionsBlock is a positions block.
+	PagePositionsBlock PageType = 0x0C
+	// PageDocValuesBlock is a doc-values column block.
+	PageDocValuesBlock PageType = 0x0D
+	// PageDocStoreBlock is a stored-field / doc-store block.
+	PageDocStoreBlock PageType = 0x0E
+	// PageHNSWNodeBlock is an HNSW graph node block.
+	PageHNSWNodeBlock PageType = 0x0F
+	// PageWALFrame is an inline WAL frame page.
+	PageWALFrame PageType = 0x10
+	// PageRoaringBlock is a roaring bitmap block (live-doc filter).
+	PageRoaringBlock PageType = 0x11
+	// PageSkipList is a skip-list index block.
+	PageSkipList PageType = 0x12
+	// PageCompactionTomb is a transient compaction tombstone.
+	PageCompactionTomb PageType = 0x13
+	// PageReserved is reserved for pager internal use.
+	PageReserved PageType = 0xFE
+	// PageZero is an uninitialized / zeroed page.
+	PageZero PageType = 0xFF
 )
 
 // Page flags (doc 02 §4.2), carried in the common header's page_flags byte.

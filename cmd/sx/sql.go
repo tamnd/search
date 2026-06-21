@@ -17,8 +17,10 @@ import (
 // bindList collects repeated -v name=value flags into named bind arguments.
 type bindList []any
 
+// String implements flag.Value; the accumulated binds have no useful printable form.
 func (b *bindList) String() string { return "" }
 
+// Set implements flag.Value by parsing one name=value flag into a named bind argument.
 func (b *bindList) Set(v string) error {
 	name, val, ok := strings.Cut(v, "=")
 	if !ok {
