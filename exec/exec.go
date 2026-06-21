@@ -11,6 +11,7 @@ package exec
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/tamnd/search/analysis"
 	"github.com/tamnd/search/collect"
@@ -69,15 +70,22 @@ func (se *Searcher) Search(q query.Query, k int) ([]collect.Hit, error) {
 	if err := q.Validate(schemaView{se.schema}); err != nil {
 		return nil, err
 	}
+	if rq, ok := q.(*query.RescoreQuery); ok {
+		return se.searchRescore(rq, k)
+	}
 	sc, err := se.compile(q)
 	if err != nil {
 		return nil, err
 	}
+	return se.collectTopK(sc, k)
+}
+
+// collectTopK drives a scorer to completion and returns the k highest-scoring
+// documents, filtering deleted docs and feeding the running threshold back to a
+// WAND-capable scorer so it can prune.
+func (se *Searcher) collectTopK(sc scorer, k int) ([]collect.Hit, error) {
 	sc = newLiveFilter(sc, se.dead)
 	c := collect.NewTopK(k)
-	// A WAND-capable scorer prunes documents that cannot enter the heap; feed it
-	// the current threshold after every admission so the bound tightens as the
-	// heap fills.
 	prune, prunes := sc.(pruner)
 	d, err := sc.next()
 	if err != nil {
@@ -92,6 +100,49 @@ func (se *Searcher) Search(q query.Query, k int) ([]collect.Hit, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	return c.Results(), nil
+}
+
+// searchRescore runs the two-phase rescore (doc 13 §10): the base query supplies a
+// candidate window, then the rescore query recomputes a score for each candidate
+// it matches and the two scores blend. Candidates the rescore query does not match
+// keep only their weighted base score.
+func (se *Searcher) searchRescore(rq *query.RescoreQuery, k int) ([]collect.Hit, error) {
+	window := max(rq.WindowSize, k)
+	if window <= 0 {
+		window = k
+	}
+	base, err := se.Search(rq.Query, window)
+	if err != nil {
+		return nil, err
+	}
+	rsc, err := se.compile(rq.Rescore)
+	if err != nil {
+		return nil, err
+	}
+	// Candidates come back score-sorted; advancing the rescore scorer needs them
+	// in ascending doc-id order, so sort a working copy by doc-id first.
+	cand := make([]collect.Hit, len(base))
+	copy(cand, base)
+	sort.Slice(cand, func(i, j int) bool { return cand[i].DocID < cand[j].DocID })
+	if _, err := rsc.next(); err != nil {
+		return nil, err
+	}
+	c := collect.NewTopK(k)
+	for _, h := range cand {
+		var rs float32
+		d := rsc.docID()
+		if d != noMore && d < h.DocID {
+			d, err = rsc.advance(h.DocID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if d == h.DocID {
+			rs = rsc.score()
+		}
+		c.Collect(h.DocID, rq.QueryWeight*h.Score+rq.RescoreWeight*rs)
 	}
 	return c.Results(), nil
 }
