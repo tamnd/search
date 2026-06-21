@@ -114,6 +114,22 @@ func parseTyped(typ string, body json.RawMessage) (Query, error) {
 		return withBoost(MatchAll(), b.Boost), nil
 	case "match_none":
 		return MatchNone(), nil
+	case "fuzzy":
+		return parseFuzzyJSON(body)
+	case "wildcard":
+		return parseWildcardJSON(body)
+	case "regexp":
+		return parseRegexpJSON(body)
+	case "geo_distance":
+		return parseGeoDistanceJSON(body)
+	case "span_near":
+		return parseSpanNearJSON(body)
+	case "function_score":
+		return parseFunctionScoreJSON(body)
+	case "bm25f":
+		return parseBM25FJSON(body)
+	case "rescore":
+		return parseRescoreJSON(body)
 	default:
 		return nil, &Error{Msg: "unknown query type " + typ}
 	}
