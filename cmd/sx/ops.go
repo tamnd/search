@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/tamnd/search"
 )
 
 // cmdInfo prints a header and meta summary of a .sx file: its geometry, format
@@ -297,6 +299,230 @@ func cmdBackup(args []string) int {
 		return fail("close %s: %v", dst, closeErr)
 	}
 	fmt.Printf("backed up %d byte(s) to %s\n", n, dst)
+	return 0
+}
+
+// cmdStats prints a structural and runtime summary of a .sx file: document and
+// segment counts, the freelist and snapshot bookkeeping that signal whether the
+// index needs maintenance, and a per-segment breakdown. It reads only metadata,
+// so it is fast on an index of any size.
+func cmdStats(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx stats <file> [--format table|json]")
+	}
+	path := args[0]
+	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
+	format := fs.String("format", "table", "output format: table|json")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return fail("usage: sx stats <file> [--format table|json]")
+	}
+
+	db, err := openIndex(path, true)
+	if err != nil {
+		return fail("open %s: %v", path, err)
+	}
+	defer closeDB(db)
+
+	st, err := db.Stats()
+	if err != nil {
+		return fail("stats: %v", err)
+	}
+	if *format == "json" {
+		return printJSON(st)
+	}
+
+	w := bufio.NewWriter(os.Stdout)
+	defer func() { _ = w.Flush() }()
+	_, _ = fmt.Fprintf(w, "file:            %s\n", st.Path)
+	_, _ = fmt.Fprintf(w, "page size:       %d\n", st.PageSize)
+	_, _ = fmt.Fprintf(w, "page count:      %d\n", st.PageCount)
+	_, _ = fmt.Fprintf(w, "file bytes:      %d\n", st.FileBytes)
+	_, _ = fmt.Fprintf(w, "free pages:      %d\n", st.FreePages)
+	_, _ = fmt.Fprintf(w, "pending free:    %d\n", st.PendingFreePages)
+	_, _ = fmt.Fprintf(w, "documents:       %d\n", st.DocCount)
+	_, _ = fmt.Fprintf(w, "deleted:         %d\n", st.DeletedDocCount)
+	_, _ = fmt.Fprintf(w, "segments:        %d\n", st.SegmentCount)
+	_, _ = fmt.Fprintf(w, "terms (sum):     %d\n", st.TotalTerms)
+	_, _ = fmt.Fprintf(w, "active readers:  %d\n", st.ActiveReaders)
+	_, _ = fmt.Fprintf(w, "oldest reader:   %d\n", st.OldestReaderTxn)
+	_, _ = fmt.Fprintf(w, "live txn:        %d\n", st.TxnID)
+	for _, s := range st.Segments {
+		var terms uint64
+		for _, f := range s.Fields {
+			terms += f.TermCount
+		}
+		_, _ = fmt.Fprintf(w, "  segment %d: docs=%d maxdoc=%d fields=%d terms=%d\n",
+			s.ID, s.DocCount, s.MaxDoc, len(s.Fields), terms)
+	}
+	return 0
+}
+
+// cmdCheckpoint folds the WAL sidecar back into the main file and removes it.
+//
+// In this engine durability is provided by the double-buffered meta pages, not a
+// separate write-ahead log wired into the pager, so a .sx file is always
+// self-contained at rest and no `<file>-wal` sidecar is ever produced. The
+// command therefore validates the file and, finding no sidecar, reports that the
+// file is already self-contained and exits 0, which is exactly the no-op the
+// operations spec prescribes when no sidecar is present. The command exists so
+// scripts that defensively checkpoint before copying a file keep working.
+func cmdCheckpoint(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx checkpoint <file>")
+	}
+	path := args[0]
+	fs := flag.NewFlagSet("checkpoint", flag.ContinueOnError)
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return fail("usage: sx checkpoint <file>")
+	}
+
+	db, err := openIndex(path, true)
+	if err != nil {
+		return fail("open %s: %v", path, err)
+	}
+	closeDB(db)
+
+	sidecar := path + "-wal"
+	if _, err := os.Stat(sidecar); err == nil {
+		// A sidecar should never exist for a file this engine wrote; if a future
+		// format introduces one, surface it rather than silently ignore it.
+		return fail("found %s but this build has no WAL to fold; leaving it in place", sidecar)
+	}
+	fmt.Printf("no WAL sidecar; %s is self-contained\n", path)
+	return 0
+}
+
+// cmdRestore copies a backup file to a destination and verifies it. It is the
+// inverse of `sx backup`: a smart copy that refuses to clobber an existing file
+// without --force and confirms the restored file passes an integrity check
+// before reporting success.
+func cmdRestore(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx restore <dest> --from <backup> [--force] [--no-verify]")
+	}
+	dst := args[0]
+	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	from := fs.String("from", "", "source backup file (required)")
+	force := fs.Bool("force", false, "overwrite the destination if it exists")
+	noVerify := fs.Bool("no-verify", false, "skip the integrity check on the restored file")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 || *from == "" {
+		return fail("usage: sx restore <dest> --from <backup> [--force] [--no-verify]")
+	}
+
+	if _, err := os.Stat(dst); err == nil && !*force {
+		return fail("%s exists; pass --force to overwrite", dst)
+	}
+
+	in, err := os.Open(*from)
+	if err != nil {
+		return fail("open %s: %v", *from, err)
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return fail("create %s: %v", dst, err)
+	}
+	n, copyErr := io.Copy(out, in)
+	syncErr := out.Sync()
+	closeErr := out.Close()
+	if copyErr != nil {
+		return fail("copy: %v", copyErr)
+	}
+	if syncErr != nil {
+		return fail("sync %s: %v", dst, syncErr)
+	}
+	if closeErr != nil {
+		return fail("close %s: %v", dst, closeErr)
+	}
+
+	if !*noVerify {
+		db, err := openIndex(dst, true)
+		if err != nil {
+			return fail("open restored %s: %v", dst, err)
+		}
+		rep, err := db.Verify(false)
+		closeDB(db)
+		if err != nil {
+			return fail("verify restored %s: %v", dst, err)
+		}
+		if !rep.OK() {
+			_, _ = fmt.Fprintf(os.Stderr, "sx: restored file failed verification:\n")
+			for _, e := range rep.Errors {
+				_, _ = fmt.Fprintf(os.Stderr, "  - %s\n", e)
+			}
+			return 4
+		}
+	}
+	fmt.Printf("restored %d byte(s) to %s\n", n, dst)
+	return 0
+}
+
+// cmdRepair rebuilds a possibly-damaged index into a new file, leaving the
+// source untouched. It exits 0 on a clean rebuild, 8 when it recovered the file
+// but had to drop unreadable documents (best-effort partial success), and 4 when
+// the source cannot be opened at all.
+func cmdRepair(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx repair <file> [--out fixed.sx] [--force]")
+	}
+	src := args[0]
+	fs := flag.NewFlagSet("repair", flag.ContinueOnError)
+	out := fs.String("out", "", "output file for the rebuilt index (default <file>.repaired)")
+	force := fs.Bool("force", false, "overwrite the output file if it exists")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return fail("usage: sx repair <file> [--out fixed.sx] [--force]")
+	}
+	dst := *out
+	if dst == "" {
+		dst = src + ".repaired"
+	}
+	if dst == src {
+		return fail("repair never writes in place; choose a different --out")
+	}
+	if _, err := os.Stat(dst); err == nil {
+		if !*force {
+			return fail("%s exists; pass --force to overwrite", dst)
+		}
+		if err := os.Remove(dst); err != nil {
+			return fail("remove %s: %v", dst, err)
+		}
+	}
+
+	rep, err := search.Repair(src, dst, search.Options{UnsafeNoLock: unsafeNoLock})
+	if err != nil {
+		// The source could not be opened or the output could not be created: an
+		// unrecoverable repair from the operator's point of view.
+		_, _ = fmt.Fprintf(os.Stderr, "sx: repair: %v\n", err)
+		return 4
+	}
+
+	fmt.Printf("repaired %s -> %s\n", src, dst)
+	fmt.Printf("  recovered: %d document(s)\n", rep.Recovered)
+	fmt.Printf("  dropped:   %d document(s)\n", rep.Dropped)
+	if len(rep.Errors) > 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "sx: repair completed with %d warning(s):\n", len(rep.Errors))
+		for _, e := range rep.Errors {
+			_, _ = fmt.Fprintf(os.Stderr, "  - %s\n", e)
+		}
+	}
+	if !rep.OK() {
+		// Best-effort partial success: the file was rebuilt but is not a complete
+		// copy of the original.
+		return 8
+	}
 	return 0
 }
 

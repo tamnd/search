@@ -60,8 +60,16 @@ func run(args []string) int {
 		return cmdCompact(args[1:])
 	case "info":
 		return cmdInfo(args[1:])
+	case "stats":
+		return cmdStats(args[1:])
 	case "verify":
 		return cmdVerify(args[1:])
+	case "checkpoint":
+		return cmdCheckpoint(args[1:])
+	case "repair":
+		return cmdRepair(args[1:])
+	case "restore":
+		return cmdRestore(args[1:])
 	case "export":
 		return cmdExport(args[1:])
 	case "import":
@@ -146,10 +154,14 @@ commands:
   compact    merge segments and reclaim deleted space
 
   info       print the file header and meta summary
+  stats      print structural and runtime statistics
   verify     check the file for corruption (--deep scans all postings)
+  checkpoint fold the WAL sidecar into the file (no-op: file is self-contained)
+  repair     rebuild a damaged file into a new one (best-effort)
   export     write every live document as JSONL
   import     index documents from JSONL in streaming batches
   backup     copy a consistent snapshot to another path
+  restore    copy a backup to a destination and verify it
   vacuum     force-merge all segments and reap deleted documents
 
 global flags:
