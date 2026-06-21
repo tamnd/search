@@ -88,18 +88,11 @@ sx query books.sx --field title go
 
 ## Documentation
 
-The tutorials in [doc/](doc/) walk through the engine from first index to production tuning.
+Full docs and guides live at **[search.tamnd.com](https://search.tamnd.com)**.
 
-- [Getting Started](doc/01-getting-started.md)
-- [Building an Index](doc/02-building-an-index.md)
-- [Querying](doc/03-querying.md)
-- [Facets and Sorting](doc/04-facets-and-sorting.md)
-- [Vector Search](doc/05-vector-search.md)
-- [Hybrid Search](doc/06-hybrid-search.md)
-- [C ABI](doc/07-c-abi.md)
-- [SQL Interface](doc/08-sql-interface.md)
-- [Operations](doc/09-operations.md)
-- [Performance Tuning](doc/10-performance-tuning.md)
+- [Getting started](https://search.tamnd.com/getting-started/) walks from install to a first query.
+- [Guides](https://search.tamnd.com/guides/) cover building an index, full-text search, facets and sorting, vector search, hybrid search, the SQL interface, operations, and performance tuning.
+- [Reference](https://search.tamnd.com/reference/) is the CLI, configuration, C ABI, and release notes.
 
 ## Design commitments
 

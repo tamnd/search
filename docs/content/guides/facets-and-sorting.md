@@ -1,13 +1,14 @@
-# Facets and sorting
+---
+title: "Facets and sorting"
+description: "Sort by a field, count documents into buckets, and collapse duplicates with the request API and the CLI flags."
+weight: 30
+---
 
-Plain search ranks by relevance and returns the top k.
-When you need to sort by a field, count documents into buckets, or collapse duplicates, you use the request API, which reads the columnar doc-values built alongside the inverted index.
+Plain search ranks by relevance and returns the top k. When you need to sort by a field, count documents into buckets, or collapse duplicates, you use the request API, which reads the columnar doc-values built alongside the inverted index.
 
 ## Doc-values fields
 
-Sorting and faceting do not read the inverted index; they read a per-field column called a doc-value.
-A field carries doc-values when its `DocValues` option is set, which is the default for keyword, numeric, date, boolean, and geo fields.
-Text fields do not carry doc-values (you sort and facet on a keyword, not on analyzed text).
+Sorting and faceting do not read the inverted index; they read a per-field column called a doc-value. A field carries doc-values when its `DocValues` option is set, which is the default for keyword, numeric, date, boolean, and geo fields. Text fields do not carry doc-values (you sort and facet on a keyword, not on analyzed text).
 
 So a schema that you intend to sort and facet on looks like this, and you get the columns for free from the defaults:
 
@@ -21,8 +22,7 @@ s.Add(schema.NewField("created", schema.TypeDate))   // sort + histogram
 
 ## The SearchRequest API
 
-`SearchRequestExec` runs a full request: matching, optional sort or collapse, and single-pass aggregations.
-`Query` and `K` are required; the rest are optional.
+`SearchRequestExec` runs a full request: matching, optional sort or collapse, and single-pass aggregations. `Query` and `K` are required; the rest are optional.
 
 ```go
 req := search.SearchRequest{
@@ -36,8 +36,7 @@ req := search.SearchRequest{
 res, err := db.SearchRequestExec(req)
 ```
 
-`res.Hits` holds the ranked hits and `res.Aggs` holds the aggregation results keyed by the names you gave.
-When a request asks for neither sort, aggregations, nor collapse, the engine falls back to the plain score-ranked top-k path, so the request API is never slower than `Search` for the simple case.
+`res.Hits` holds the ranked hits and `res.Aggs` holds the aggregation results keyed by the names you gave. When a request asks for neither sort, aggregations, nor collapse, the engine falls back to the plain score-ranked top-k path, so the request API is never slower than `Search` for the simple case.
 
 ## Sorting
 
@@ -63,8 +62,7 @@ req.Sort = []search.SortKey{
 }
 ```
 
-For a multi-valued numeric field, `Mode` reduces the values to one for comparison (default min ascending, max descending).
-For a `geo_point` field, set `Origin` to sort by great-circle distance to that point.
+For a multi-valued numeric field, `Mode` reduces the values to one for comparison (default min ascending, max descending). For a `geo_point` field, set `Origin` to sort by great-circle distance to that point.
 
 From the CLI, `--sort` takes comma-separated keys, each `field[:asc|desc][:missing_last]`:
 
@@ -75,9 +73,7 @@ sx query products.sx running --sort '_score:desc'
 
 ## Aggregations
 
-An `AggSpec` describes one aggregation.
-`Kind` is one of `terms`, `histogram`, `range`, `min`, `max`, `sum`, `avg`, `count`, `stats`, `cardinality`, or `percentiles`.
-The other fields apply to the kinds that use them.
+An `AggSpec` describes one aggregation. `Kind` is one of `terms`, `histogram`, `range`, `min`, `max`, `sum`, `avg`, `count`, `stats`, `cardinality`, or `percentiles`. The other fields apply to the kinds that use them.
 
 ```go
 req.Aggs = map[string]search.AggSpec{
@@ -98,9 +94,7 @@ fmt.Println(res.Aggs["avg_price"].Value)        // single-value metrics
 fmt.Println(res.Aggs["price_pcts"].Values)      // multi-value metrics
 ```
 
-A bucketed aggregation (terms, histogram, range) fills `Buckets`.
-A single-value metric (min, max, sum, avg, count, cardinality) fills `Value`.
-A multi-value metric (stats, percentiles) fills `Values`, a name-to-number map.
+A bucketed aggregation (terms, histogram, range) fills `Buckets`. A single-value metric (min, max, sum, avg, count, cardinality) fills `Value`. A multi-value metric (stats, percentiles) fills `Values`, a name-to-number map.
 
 Terms aggregations can nest sub-aggregations through `Sub`, and you can order a terms agg by key instead of count with `ByKey`.
 
@@ -112,8 +106,7 @@ sx query products.sx running --facet 'pcts=percentiles:price:50|95|99'
 sx query products.sx running --facet 'avg=avg:price'
 ```
 
-The CLI covers terms, histogram, the single-value metrics, cardinality, and percentiles.
-Range facets and nested aggregations are library-only; build those with `SearchRequestExec`.
+The CLI covers terms, histogram, the single-value metrics, cardinality, and percentiles. Range facets and nested aggregations are library-only; build those with `SearchRequestExec`.
 
 ## Collapsing
 
@@ -141,4 +134,4 @@ sx query products.sx running \
   --size 20 --format json
 ```
 
-See [querying](03-querying.md) for the query side, and [vector search](05-vector-search.md) for filtered kNN, which uses a query as a pre-filter.
+See [full-text search](/guides/full-text-search/) for the query side, and [vector search](/guides/vector-search/) for filtered kNN, which uses a query as a pre-filter.

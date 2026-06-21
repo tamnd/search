@@ -1,0 +1,10 @@
+title       = "search"
+baseURL     = "https://search.tamnd.com/"
+description = "search is an embedded, single-file, full-text and vector search engine for Go. It is to search what SQLite is to relational data: a library you link into your process, one ordinary file on disk, no server, no daemon."
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/search"
