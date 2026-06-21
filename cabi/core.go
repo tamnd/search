@@ -59,10 +59,10 @@ const (
 )
 
 // LibVersion is the library semantic version reported by sx_libversion.
-const LibVersion = "0.1.0"
+const LibVersion = "1.0.0"
 
 // LibVersionNumber encodes LibVersion as MAJOR*1000000 + MINOR*1000 + PATCH.
-const LibVersionNumber = 0*1000000 + 1*1000 + 0
+const LibVersionNumber = 1*1000000 + 0*1000 + 0
 
 // ABIVersion is the C ABI contract version, frozen at 1 for the 1.0 release. It
 // increments only on a breaking ABI change, independent of LibVersion.
