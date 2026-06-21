@@ -113,45 +113,59 @@ func docCount(c *catalog.Catalog) (uint64, error) {
 func (db *DB) Index(docs []map[string]any) (int, error) {
 	n := 0
 	err := db.Update(func(t *Txn) error {
-		c := t.Catalog()
-		s, ok, err := loadSchema(c)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return ErrNoSchema
-		}
-		store := docstore.New(c, catalog.NSDocStore)
-		idField := s.PrimaryKey()
-		docs = dedupByExternalID(docs, idField)
-
-		set, err := segment.LoadSet(c)
-		if err != nil {
-			return err
-		}
-		del := newDeleter(c, set, store)
-
-		// Persist every document first, collecting the (doc-id, body) pairs so the
-		// memtable can be built in ascending doc-id order (the posting-list
-		// invariant), independent of the order replaces resolve to.
-		entries := make([]docEntry, 0, len(docs))
-		var maxDoc uint64
-		for _, doc := range docs {
-			docID, err := indexOne(c, store, del, idField, doc)
-			if err != nil {
-				return err
-			}
-			entries = append(entries, docEntry{docID: docID, doc: doc})
-			maxDoc = max(maxDoc, docID)
-			n++
-		}
-		if err := del.flush(); err != nil {
-			return err
-		}
-		return flushBatch(c, s, entries, maxDoc)
+		var err error
+		n, err = db.indexTxn(t, docs)
+		return err
 	})
 	if err != nil {
 		return 0, err
+	}
+	return n, nil
+}
+
+// indexTxn indexes docs into the catalog bound to t without committing. It is the
+// shared body of Index; the caller's transaction decides whether the work is
+// committed or rolled back. It returns the number of documents indexed so far,
+// which is meaningful even when it returns an error.
+func (db *DB) indexTxn(t *Txn, docs []map[string]any) (int, error) {
+	c := t.Catalog()
+	s, ok, err := loadSchema(c)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, ErrNoSchema
+	}
+	store := docstore.New(c, catalog.NSDocStore)
+	idField := s.PrimaryKey()
+	docs = dedupByExternalID(docs, idField)
+
+	set, err := segment.LoadSet(c)
+	if err != nil {
+		return 0, err
+	}
+	del := newDeleter(c, set, store)
+
+	// Persist every document first, collecting the (doc-id, body) pairs so the
+	// memtable can be built in ascending doc-id order (the posting-list
+	// invariant), independent of the order replaces resolve to.
+	n := 0
+	entries := make([]docEntry, 0, len(docs))
+	var maxDoc uint64
+	for _, doc := range docs {
+		docID, err := indexOne(c, store, del, idField, doc)
+		if err != nil {
+			return n, err
+		}
+		entries = append(entries, docEntry{docID: docID, doc: doc})
+		maxDoc = max(maxDoc, docID)
+		n++
+	}
+	if err := del.flush(); err != nil {
+		return n, err
+	}
+	if err := flushBatch(c, s, entries, maxDoc); err != nil {
+		return n, err
 	}
 	return n, nil
 }
