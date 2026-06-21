@@ -32,6 +32,8 @@ const (
 	NSSegFST          byte = 0x0E // per-segment, per-field term dictionary FST (doc 08)
 	NSSegPostings     byte = 0x0F // per-segment, per-field postings records (doc 09)
 	NSSegNorms        byte = 0x10 // per-segment, per-field length norms (doc 13 §3)
+	NSSegDocValues    byte = 0x11 // per-segment, per-field columnar doc-values (doc 14)
+	NSSegPoints       byte = 0x12 // per-segment, per-field BKD points index (doc 14 §8)
 )
 
 // Catalog is a namespaced view of one B+tree. It mutates through the bound root
