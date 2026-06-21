@@ -13,12 +13,14 @@ import (
 )
 
 // Hit is one search result: the matched document's internal doc-id, its external
-// id, the BM25 (or constant) score, and the stored document body.
+// id, the BM25 (or constant) score, and the stored document body. Highlights, when
+// requested, maps a field name to its highlighted fragments.
 type Hit struct {
 	DocID      uint64
 	ExternalID string
 	Score      float32
 	Document   map[string]any
+	Highlights map[string][]string
 }
 
 // Search runs a query tree against the live segments and returns the k

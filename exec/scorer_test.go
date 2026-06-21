@@ -148,3 +148,30 @@ func TestWandSkipsDocuments(t *testing.T) {
 		t.Fatalf("WAND visited the common term %d times, no pruning happened", common.moves)
 	}
 }
+
+// TestBoolAdvanceSkipsExcluded is a regression test for an infinite loop in the
+// should-led boolScorer. When advance(target) landed on a document that a
+// must_not clause excluded, find() used to re-issue the same advance(target),
+// which returns the same already-excluded document forever. find() must instead
+// step forward with next() after a rejection.
+func TestBoolAdvanceSkipsExcluded(t *testing.T) {
+	should := newOrScorer([]scorer{newFakeTerm([]uint32{2, 4, 6}, 1.0)}, 1)
+	prohibited := newFakeTerm([]uint32{2, 4}, 1.0)
+	b := &boolScorer{shoulds: should, prohibited: []scorer{prohibited}}
+
+	// 2 and 4 are excluded, so advancing to 2 must surface 6.
+	d, err := b.advance(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d != 6 {
+		t.Fatalf("advance(2) = %d, want 6 (2 and 4 are excluded)", d)
+	}
+	d, err = b.next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d != noMore {
+		t.Fatalf("next() after last match = %d, want noMore", d)
+	}
+}

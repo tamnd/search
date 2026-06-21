@@ -49,6 +49,8 @@ func run(args []string) int {
 		return cmdInspect(args[1:])
 	case "query", "search":
 		return cmdQuery(args[1:])
+	case "sql":
+		return cmdSQL(args[1:])
 	case "knn":
 		return cmdKNN(args[1:])
 	case "hybrid":
@@ -105,6 +107,7 @@ commands:
 
   inspect    dump the segment structure of a .sx file
   query      run a query against a .sx file
+  sql        run a SELECT statement through the built-in SQL surface
   knn        run a k-nearest-neighbor vector search
   hybrid     run a hybrid text + vector search fused with RRF
   compact    merge segments and reclaim deleted space

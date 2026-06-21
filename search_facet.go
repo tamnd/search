@@ -10,6 +10,7 @@ import (
 	"github.com/tamnd/search/collect"
 	"github.com/tamnd/search/docstore"
 	"github.com/tamnd/search/exec"
+	"github.com/tamnd/search/highlight"
 	"github.com/tamnd/search/query"
 	"github.com/tamnd/search/segment"
 )
@@ -52,11 +53,12 @@ type AggSpec struct {
 // SearchRequest is a search with optional sort, aggregations, and field
 // collapse. Query and K are required; the rest are optional.
 type SearchRequest struct {
-	Query    query.Query
-	K        int
-	Sort     []SortKey
-	Aggs     map[string]AggSpec
-	Collapse string // keyword field to collapse results on
+	Query     query.Query
+	K         int
+	Sort      []SortKey
+	Aggs      map[string]AggSpec
+	Collapse  string                       // keyword field to collapse results on
+	Highlight map[string]highlight.Options // per-field highlight options
 }
 
 // SearchResult carries the hits and the aggregation results of a SearchRequest.
@@ -122,6 +124,9 @@ func (db *DB) searchRequestTxn(t *Txn, req SearchRequest) (SearchResult, error) 
 		}
 		hits, err := resolveHits(store, pk, scored2hits(scored))
 		if err != nil {
+			return SearchResult{}, err
+		}
+		if err := db.applyHighlights(c, s, req.Query, hits, req.Highlight); err != nil {
 			return SearchResult{}, err
 		}
 		return SearchResult{Hits: hits}, nil
@@ -204,6 +209,10 @@ func (db *DB) searchRequestTxn(t *Txn, req SearchRequest) (SearchResult, error) 
 	}
 	hits, err := resolveHits(store, pk, scored)
 	if err != nil {
+		return SearchResult{}, err
+	}
+
+	if err := db.applyHighlights(c, s, req.Query, hits, req.Highlight); err != nil {
 		return SearchResult{}, err
 	}
 

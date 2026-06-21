@@ -203,3 +203,137 @@ func TestValidateUnknownField(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestParseJSONFuzzy(t *testing.T) {
+	q, err := ParseJSON([]byte(`{"fuzzy": {"field": "title", "term": "serch", "max_edits": 1}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fq, ok := q.(*FuzzyQuery)
+	if !ok {
+		t.Fatalf("got %T, want *FuzzyQuery", q)
+	}
+	if fq.Field != "title" || fq.Term != "serch" || fq.MaxEdits != 1 || fq.AutoEdits {
+		t.Fatalf("got %+v", fq)
+	}
+}
+
+func TestParseJSONWildcardRegexp(t *testing.T) {
+	w, err := ParseJSON([]byte(`{"wildcard": {"field": "title", "value": "qu*ck"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wq, ok := w.(*WildcardQuery); !ok || wq.Pattern != "qu*ck" {
+		t.Fatalf("wildcard got %+v", w)
+	}
+	r, err := ParseJSON([]byte(`{"regexp": {"field": "code", "value": "[0-9]{4}"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rq, ok := r.(*RegexpQuery); !ok || rq.Pattern != "[0-9]{4}" {
+		t.Fatalf("regexp got %+v", r)
+	}
+}
+
+func TestParseJSONGeoDistance(t *testing.T) {
+	q, err := ParseJSON([]byte(`{"geo_distance": {"field": "loc", "lat": 40.7, "lon": -74.0, "distance": 5000}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, ok := q.(*GeoDistanceQuery)
+	if !ok {
+		t.Fatalf("got %T", q)
+	}
+	if g.Field != "loc" || g.Lat != 40.7 || g.Lon != -74.0 || g.Meters != 5000 {
+		t.Fatalf("got %+v", g)
+	}
+}
+
+func TestParseJSONSpanNear(t *testing.T) {
+	q, err := ParseJSON([]byte(`{"span_near": {"field": "body", "terms": ["quick","fox"], "slop": 2, "in_order": false}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := q.(*SpanNearQuery)
+	if !ok {
+		t.Fatalf("got %T", q)
+	}
+	if s.Field != "body" || len(s.Terms) != 2 || s.Slop != 2 || s.InOrder {
+		t.Fatalf("got %+v", s)
+	}
+}
+
+func TestParseJSONFunctionScore(t *testing.T) {
+	data := `{"function_score": {
+		"query": {"match": {"field": "title", "query": "fox"}},
+		"functions": [
+			{"field_value_factor": {"field": "views", "modifier": "ln1p", "missing": 1}, "weight": 2},
+			{"filter": {"term": {"field": "tag", "value": "hot"}}, "weight": 3}
+		],
+		"score_mode": "sum",
+		"boost_mode": "replace",
+		"max_boost": 10
+	}}`
+	q, err := ParseJSON([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs, ok := q.(*FunctionScoreQuery)
+	if !ok {
+		t.Fatalf("got %T", q)
+	}
+	if fs.ScoreMode != ScoreSum || fs.BoostMode != BoostReplace || fs.MaxBoost != 10 {
+		t.Fatalf("modes wrong: %+v", fs)
+	}
+	if len(fs.Functions) != 2 {
+		t.Fatalf("functions = %d, want 2", len(fs.Functions))
+	}
+	if fs.Functions[0].FieldValue == nil || fs.Functions[0].FieldValue.Modifier != ModLn1p {
+		t.Fatalf("field_value_factor wrong: %+v", fs.Functions[0])
+	}
+	if fs.Functions[1].Filter == nil {
+		t.Fatalf("filter not parsed: %+v", fs.Functions[1])
+	}
+}
+
+func TestParseJSONBM25F(t *testing.T) {
+	data := `{"bm25f": {"terms": ["fox"], "fields": [{"name": "title", "boost": 2}, {"name": "body"}], "k1": 1.2}}`
+	q, err := ParseJSON([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, ok := q.(*BM25FQuery)
+	if !ok {
+		t.Fatalf("got %T", q)
+	}
+	if len(b.Terms) != 1 || len(b.Fields) != 2 || b.K1 != 1.2 {
+		t.Fatalf("got %+v", b)
+	}
+	if b.Fields[0].Name != "title" || b.Fields[0].Boost != 2 {
+		t.Fatalf("field 0 wrong: %+v", b.Fields[0])
+	}
+}
+
+func TestParseJSONRescore(t *testing.T) {
+	data := `{"rescore": {
+		"query": {"match": {"field": "title", "query": "fox"}},
+		"rescore": {"match_phrase": {"field": "title", "query": "quick fox"}},
+		"window_size": 100,
+		"query_weight": 0.7,
+		"rescore_weight": 1.3
+	}}`
+	q, err := ParseJSON([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := q.(*RescoreQuery)
+	if !ok {
+		t.Fatalf("got %T", q)
+	}
+	if r.WindowSize != 100 || r.QueryWeight != 0.7 || r.RescoreWeight != 1.3 {
+		t.Fatalf("got %+v", r)
+	}
+	if r.Query == nil || r.Rescore == nil {
+		t.Fatalf("sub-queries not parsed: %+v", r)
+	}
+}

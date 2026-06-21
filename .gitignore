@@ -6,5 +6,9 @@
 *.sx-wal
 .DS_Store
 
+# c-shared build artifacts; search.h is the canonical committed header
+/cabi/libsearch.*
+/examples/python/libsearch.*
+
 # the committed golden fixture is the one .sx we do track
 !pager/testdata/golden.sx

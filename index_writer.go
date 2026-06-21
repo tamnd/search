@@ -41,12 +41,13 @@ func flushBatch(c *catalog.Catalog, s *schema.Schema, entries []docEntry, maxDoc
 		}
 		mt.AddDoc()
 	}
-	// A batch with no analyzed terms and no dense vectors (every document carried
-	// only non-indexed or absent fields) produces no segment data, so nothing is
-	// written. A vector-only batch still writes a segment so its vectors are
-	// discoverable, even though it has no postings.
+	// A batch with no analyzed terms produces no postings, but it may still carry
+	// dense vectors or doc-values-only fields (a geo_point with no inverted terms).
+	// Those still need a segment so their vectors and columns are discoverable, so
+	// only a wholly empty batch is skipped.
 	hasVectors := schemaHasVectorValues(s, entries)
-	if len(mt.FieldNames()) == 0 && !hasVectors {
+	hasDocValues := schemaHasDocValues(s, entries)
+	if len(mt.FieldNames()) == 0 && !hasVectors && !hasDocValues {
 		return nil
 	}
 
