@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/tamnd/search/query"
@@ -198,6 +199,97 @@ func TestCABIHandleLeak(t *testing.T) {
 
 	// No goroutine should be left running by the surface.
 	runtime.GC()
+}
+
+// TestCABIThreadSafety opens four independent db handles, each driven by its own
+// goroutine that indexes and searches concurrently. The C API is not thread-safe
+// at the handle level, but distinct handles must not share mutable state. Run
+// with -race to catch any cross-handle data race in the handle table or objects.
+func TestCABIThreadSafety(t *testing.T) {
+	const workers = 4
+	start := liveHandles()
+
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			path := filepath.Join(t.TempDir(), fmt.Sprintf("w%d.sx", w))
+			db, rc, msg := Open(path, OpenReadWrite|OpenCreate)
+			if rc != StatusOK {
+				errs[w] = fmt.Errorf("open: rc=%d %s", rc, msg)
+				return
+			}
+			for _, fj := range []string{
+				`{"name":"title","type":"text","stored":true,"indexed":true}`,
+				`{"name":"views","type":"long","stored":true,"doc_values":true}`,
+			} {
+				if rc := DefineField(db, fj); rc != StatusOK {
+					errs[w] = fmt.Errorf("define: rc=%d", rc)
+					return
+				}
+			}
+			wr, rc := WriterOpen(db)
+			if rc != StatusOK {
+				errs[w] = fmt.Errorf("writer_open: rc=%d", rc)
+				return
+			}
+			for i := 0; i < 50; i++ {
+				doc := fmt.Sprintf(`{"_id":"w%d-%d","title":"shared brown fox %d","views":%d}`, w, i, i, i)
+				if rc := Index(wr, doc); rc != StatusOK {
+					errs[w] = fmt.Errorf("index: rc=%d", rc)
+					return
+				}
+			}
+			if rc := Commit(wr); rc != StatusOK {
+				errs[w] = fmt.Errorf("commit: rc=%d", rc)
+				return
+			}
+			if rc := WriterClose(wr); rc != StatusOK {
+				errs[w] = fmt.Errorf("writer_close: rc=%d", rc)
+				return
+			}
+
+			snap, rc := SnapshotOpen(db)
+			if rc != StatusOK {
+				errs[w] = fmt.Errorf("snapshot: rc=%d", rc)
+				return
+			}
+			q, rc := Prepare(snap, `{"match":{"field":"title","query":"brown"}}`)
+			if rc != StatusOK {
+				errs[w] = fmt.Errorf("prepare: rc=%d", rc)
+				return
+			}
+			cur, rc := QueryRun(q, `{"from":0,"size":100}`)
+			if rc != StatusOK {
+				errs[w] = fmt.Errorf("run: rc=%d", rc)
+				return
+			}
+			n := 0
+			for Step(cur) == StatusRow {
+				n++
+			}
+			if n != 50 {
+				errs[w] = fmt.Errorf("expected 50 hits, got %d", n)
+			}
+			CursorClose(cur)
+			QueryClose(q)
+			SnapshotClose(snap)
+			if rc := Close(db); rc != StatusOK {
+				errs[w] = fmt.Errorf("close: rc=%d", rc)
+			}
+		}(w)
+	}
+	wg.Wait()
+	for w, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d: %v", w, err)
+		}
+	}
+	if got := liveHandles(); got != start {
+		t.Fatalf("handle leak across workers: started %d, ended %d", start, got)
+	}
 }
 
 // goAPIQuery runs the reference query directly on the Go DB behind a db handle,
