@@ -25,16 +25,22 @@ func (b *boolScorer) lead() scorer {
 }
 
 func (b *boolScorer) next() (uint32, error) {
-	return b.find(func() (uint32, error) { return b.lead().next() })
+	d, err := b.lead().next()
+	return b.find(d, err)
 }
 
 func (b *boolScorer) advance(target uint32) (uint32, error) {
-	return b.find(func() (uint32, error) { return b.lead().advance(target) })
+	d, err := b.lead().advance(target)
+	return b.find(d, err)
 }
 
-func (b *boolScorer) find(step func() (uint32, error)) (uint32, error) {
+// find filters the candidate stream starting at the (d, err) the lead produced.
+// When a candidate is rejected it pulls the next one with the lead's next() rather
+// than re-issuing the original advance: an advance to a target the lead has already
+// passed returns the same doc, so re-advancing on every rejection would spin
+// forever.
+func (b *boolScorer) find(d uint32, err error) (uint32, error) {
 	for {
-		d, err := step()
 		if err != nil {
 			return 0, err
 		}
@@ -42,23 +48,26 @@ func (b *boolScorer) find(step func() (uint32, error)) (uint32, error) {
 			b.cur = noMore
 			return noMore, nil
 		}
-		ex, err := b.excluded(d)
-		if err != nil {
-			return 0, err
+		ex, exErr := b.excluded(d)
+		if exErr != nil {
+			return 0, exErr
 		}
 		if ex {
+			d, err = b.lead().next()
 			continue
 		}
 		if b.required != nil {
 			var ss float32
 			var sc int
 			if b.shoulds != nil {
-				ss, sc, err = b.shoulds.scoreAt(d)
-				if err != nil {
-					return 0, err
+				var scErr error
+				ss, sc, scErr = b.shoulds.scoreAt(d)
+				if scErr != nil {
+					return 0, scErr
 				}
 			}
 			if sc < b.minShould {
+				d, err = b.lead().next()
 				continue
 			}
 			b.curScore = b.required.score() + ss
