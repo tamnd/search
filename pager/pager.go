@@ -37,6 +37,21 @@ var (
 	ErrExists = errors.New("search/pager: file already exists")
 )
 
+// acquireLock takes the advisory file lock for a freshly opened file: exclusive
+// for a writable pager, shared for a read-only one. A backend without locking
+// (the in-memory VFS) is a no-op. On a filesystem where locks are unsafe it
+// honors UnsafeNoLock, proceeding without a lock when the caller opted in.
+func acquireLock(f vfs.File, readOnly, unsafeNoLock bool) error {
+	if unsafeNoLock {
+		return nil
+	}
+	lk, ok := f.(vfs.Locker)
+	if !ok {
+		return nil
+	}
+	return lk.Lock(!readOnly)
+}
+
 // Options configure how a pager opens or creates a file. The zero value is the
 // production default: full synchronous durability, read-write, default page
 // size, OS clock, and a wall-clock-seeded WAL salt.
@@ -52,6 +67,10 @@ type Options struct {
 	SaltSeed uint64
 	// Clock is the time source; nil uses the OS clock.
 	Clock determ.Clock
+	// UnsafeNoLock skips the advisory file lock. It lets an index open on a
+	// filesystem where locks are unsafe (NFS), at the cost of multi-process
+	// exclusion: the caller must guarantee no other process opens the file.
+	UnsafeNoLock bool
 }
 
 // Pager is an open page store over one file.
@@ -97,6 +116,10 @@ func Create(fsys vfs.VFS, path string, opt Options) (*Pager, error) {
 
 	f, err := fsys.Open(path, true)
 	if err != nil {
+		return nil, err
+	}
+	if err := acquireLock(f, false, opt.UnsafeNoLock); err != nil {
+		_ = f.Close()
 		return nil, err
 	}
 
@@ -163,6 +186,10 @@ func Open(fsys vfs.VFS, path string, opt Options) (*Pager, error) {
 	}
 	f, err := fsys.Open(path, false)
 	if err != nil {
+		return nil, err
+	}
+	if err := acquireLock(f, opt.ReadOnly, opt.UnsafeNoLock); err != nil {
+		_ = f.Close()
 		return nil, err
 	}
 
@@ -240,6 +267,12 @@ func (p *Pager) Close() error {
 	defer p.mu.Unlock()
 	if p.f == nil {
 		return nil
+	}
+	// Release the advisory lock before closing. Closing the descriptor would
+	// drop it anyway, but an explicit unlock keeps the intent clear and frees
+	// the lock even if a future Close path holds the descriptor open.
+	if lk, ok := p.f.(vfs.Locker); ok {
+		_ = lk.Unlock()
 	}
 	err := p.f.Close()
 	p.f = nil

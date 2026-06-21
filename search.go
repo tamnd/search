@@ -22,6 +22,15 @@ import (
 // FormatVersion is the on-disk format version this build reads and writes.
 const FormatVersion = page.FormatVersion
 
+// ErrLocked is returned by Open when another process already holds the index
+// lock. The caller should retry later or coordinate access.
+var ErrLocked = vfs.ErrLocked
+
+// ErrUnsupportedFilesystem is returned by Open when the index lives on a
+// filesystem where advisory locks are unsafe, such as NFS. Set
+// Options.UnsafeNoLock to open anyway with locking disabled.
+var ErrUnsupportedFilesystem = vfs.ErrUnsupportedFilesystem
+
 // DB is an open search index. It serializes write transactions with writeMu
 // (the single-writer discipline) and tracks live readers and the page freelist
 // under rmu so copy-on-write pages are reclaimed only once no reader can still
@@ -63,6 +72,10 @@ type Options struct {
 	SaltSeed uint64
 	// Clock is the time source; nil uses the OS clock.
 	Clock determ.Clock
+	// UnsafeNoLock skips the advisory multi-process file lock. Use it only when
+	// the file lives on a filesystem where locks are unsafe (NFS) and you can
+	// guarantee no other process opens the index concurrently.
+	UnsafeNoLock bool
 }
 
 // Open opens the index at path, creating it with a fresh header if it does not
@@ -75,11 +88,12 @@ func Open(path string, opt Options) (*DB, error) {
 		fsys = vfs.NewOS()
 	}
 	popt := pager.Options{
-		PageSize: opt.PageSize,
-		Sync:     opt.Sync,
-		ReadOnly: opt.ReadOnly,
-		SaltSeed: opt.SaltSeed,
-		Clock:    opt.Clock,
+		PageSize:     opt.PageSize,
+		Sync:         opt.Sync,
+		ReadOnly:     opt.ReadOnly,
+		SaltSeed:     opt.SaltSeed,
+		Clock:        opt.Clock,
+		UnsafeNoLock: opt.UnsafeNoLock,
 	}
 	var pgr *pager.Pager
 	var err error
