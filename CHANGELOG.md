@@ -3,6 +3,17 @@
 All notable changes to this project are recorded here.
 The format follows Keep a Changelog, and the project uses semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- A documentation website built with tago and the tago-doks theme under `docs/`, published to search.tamnd.com and the GitHub Pages mirror. It carries the getting-started path, the guides, and the reference (CLI, configuration, C ABI, release notes).
+- A release pipeline: GoReleaser (`.goreleaser.yaml`) builds archives, deb/rpm/apk packages, a multi-arch GHCR image, Homebrew and Scoop entries, checksums, CycloneDX SBOMs, and a keyless cosign signature from one tag push. The `release`, `docs`, and `ci` GitHub Actions workflows drive build, docs deploy, and the quality gates.
+
+### Changed
+
+- The prose tutorials moved from `doc/` into the documentation site under `docs/`. The README now links the site.
+
 ## [1.0.0]
 
 The 1.0 release. The file format is frozen for the 1.x line and the C ABI is stable at version 1.
