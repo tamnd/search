@@ -12,8 +12,15 @@ import (
 	"github.com/tamnd/search"
 )
 
-// version is the CLI version, overridable via -ldflags at release time.
-var version = "1.0.0"
+// version, commit, and date are stamped by -ldflags at release time
+// (see the Makefile and .goreleaser.yaml). When built without them, version
+// holds the source default and commit falls back to the VCS revision the Go
+// toolchain embeds.
+var (
+	version = "1.0.0"
+	commit  = ""
+	date    = ""
+)
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -110,11 +117,17 @@ func stripGlobalFlags(args []string) []string {
 func printVersion(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "sx %s\nformat version: %d\nbuild: %s\n",
 		version, search.FormatVersion, buildCommit())
+	if date != "" {
+		_, _ = fmt.Fprintf(w, "date: %s\n", date)
+	}
 }
 
-// buildCommit returns the VCS revision embedded by the Go toolchain, or
-// "unknown" when the binary was built without VCS stamping.
+// buildCommit returns the commit stamped at release time, or the VCS revision
+// the Go toolchain embeds, or "unknown" when the binary carries neither.
 func buildCommit() string {
+	if commit != "" {
+		return commit
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "unknown"
