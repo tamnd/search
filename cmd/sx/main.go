@@ -57,6 +57,18 @@ func run(args []string) int {
 		return cmdHybrid(args[1:])
 	case "compact":
 		return cmdCompact(args[1:])
+	case "info":
+		return cmdInfo(args[1:])
+	case "verify":
+		return cmdVerify(args[1:])
+	case "export":
+		return cmdExport(args[1:])
+	case "import":
+		return cmdImport(args[1:])
+	case "backup":
+		return cmdBackup(args[1:])
+	case "vacuum":
+		return cmdVacuum(args[1:])
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "sx: unknown subcommand %q\n\n", args[0])
 		usage(os.Stderr)
@@ -112,9 +124,11 @@ commands:
   hybrid     run a hybrid text + vector search fused with RRF
   compact    merge segments and reclaim deleted space
 
-  backup     copy a consistent snapshot              (not yet implemented)
-  info       print file header and meta summary       (not yet implemented)
-  bench      run the latency benchmark suite          (not yet implemented)
-  repl       interactive query shell                  (not yet implemented)
+  info       print the file header and meta summary
+  verify     check the file for corruption (--deep scans all postings)
+  export     write every live document as JSONL
+  import     index documents from JSONL in streaming batches
+  backup     copy a consistent snapshot to another path
+  vacuum     force-merge all segments and reap deleted documents
 `)
 }
