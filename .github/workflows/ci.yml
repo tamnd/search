@@ -23,7 +23,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -55,7 +55,7 @@ jobs:
   bench:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -71,13 +71,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           check-latest: true
           cache: true
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9.2.1
         with:
           version: latest
 
@@ -85,7 +85,7 @@ jobs:
   govulncheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -96,12 +96,28 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+  # Compile the C ABI shared library (-buildmode=c-shared, cgo). The default CI
+  # build is pure Go and never touches it, so this job keeps the libsearch path
+  # building. It is build-only: it confirms the library and its header link, not
+  # that a foreign caller runs.
+  cabi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - name: build libsearch
+        run: CGO_ENABLED=1 go build -buildmode=c-shared -o libsearch.so ./cabi
+
   # Confirm go.mod and go.sum are tidy: a PR that adds an import without running
   # go mod tidy fails here instead of breaking a later release.
   tidy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
