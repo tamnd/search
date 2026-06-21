@@ -253,9 +253,15 @@ func (p *parser) parseRange(field string, open tokKind) (Query, error) {
 	if lower.kind != tWord {
 		return nil, &Error{Msg: "range lower bound must be a value"}
 	}
+	if p.eof() {
+		return nil, &Error{Msg: "unterminated range"}
+	}
 	to := p.next()
 	if to.kind != tWord || to.text != "TO" {
 		return nil, &Error{Msg: "range expects TO between bounds"}
+	}
+	if p.eof() {
+		return nil, &Error{Msg: "unterminated range"}
 	}
 	upper := p.next()
 	if upper.kind != tWord {
