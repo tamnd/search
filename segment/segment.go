@@ -19,6 +19,7 @@ package segment
 import (
 	"encoding/binary"
 	"fmt"
+	"regexp"
 	"sort"
 
 	"github.com/tamnd/search/catalog"
@@ -392,6 +393,46 @@ func (fr *FieldReader) Terms() ([]string, error) {
 		out[i] = string(e.Term)
 	}
 	return out, nil
+}
+
+// FuzzyTerms returns every term within maxEdits Levenshtein edits of term, in
+// lexicographic order.
+func (fr *FieldReader) FuzzyTerms(term string, maxEdits int) ([]string, error) {
+	entries, err := fr.fst.FuzzyScan(term, maxEdits)
+	if err != nil {
+		return nil, err
+	}
+	return entryTerms(entries), nil
+}
+
+// WildcardTerms returns every term matching a glob pattern (* and ?), in
+// lexicographic order.
+func (fr *FieldReader) WildcardTerms(pattern string) ([]string, error) {
+	entries, err := fr.fst.WildcardScan(pattern)
+	if err != nil {
+		return nil, err
+	}
+	return entryTerms(entries), nil
+}
+
+// RegexpTerms returns every term fully matching re, restricted to literalPrefix,
+// in lexicographic order. The bool reports whether the per-segment visit cap was
+// exceeded so the caller can warn.
+func (fr *FieldReader) RegexpTerms(re *regexp.Regexp, literalPrefix string, maxVisit int) ([]string, bool, error) {
+	entries, overflow, err := fr.fst.RegexpScan(re, literalPrefix, maxVisit)
+	if err != nil {
+		return nil, false, err
+	}
+	return entryTerms(entries), overflow, nil
+}
+
+// entryTerms projects FST entries to their term strings.
+func entryTerms(entries []fst.Entry) []string {
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = string(e.Term)
+	}
+	return out
 }
 
 // SegmentSet is the ordered set of live segments in a snapshot.

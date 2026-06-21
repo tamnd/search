@@ -29,6 +29,16 @@ func (se *Searcher) compile(q query.Query) (scorer, error) {
 		return se.compileRange(n)
 	case *query.BoolQuery:
 		return se.compileBool(n)
+	case *query.FuzzyQuery:
+		return se.compileFuzzy(n)
+	case *query.WildcardQuery:
+		return se.compileWildcard(n)
+	case *query.RegexpQuery:
+		return se.compileRegexp(n)
+	case *query.SpanNearQuery:
+		return se.compileSpanNear(n)
+	case *query.GeoDistanceQuery:
+		return se.compileGeoDistance(n)
 	default:
 		return emptyScorer{}, nil
 	}

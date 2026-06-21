@@ -9,6 +9,24 @@ import (
 	"github.com/tamnd/search/segment"
 )
 
+// schemaHasDocValues reports whether the batch carries a value for any
+// doc-values field. A batch of geo_point-only documents produces no inverted
+// terms, so flushBatch consults this to decide whether a segment must still be
+// written so the columns are discoverable.
+func schemaHasDocValues(s *schema.Schema, entries []docEntry) bool {
+	for _, f := range s.Fields {
+		if !f.Opts.DocValues {
+			continue
+		}
+		for _, e := range entries {
+			if v, ok := e.doc[f.Name]; ok && v != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // flushDocValues builds the columnar doc-values and the BKD points index for a
 // freshly flushed segment and stores them under the segment's per-field
 // namespaces (spec 2063 doc 14 §2-§9). Columns are built from the raw document

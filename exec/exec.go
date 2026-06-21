@@ -10,6 +10,8 @@
 package exec
 
 import (
+	"fmt"
+
 	"github.com/tamnd/search/analysis"
 	"github.com/tamnd/search/collect"
 	"github.com/tamnd/search/query"
@@ -35,6 +37,7 @@ type Searcher struct {
 	frCache      map[uint64]map[string]*segment.FieldReader
 	avgdlCache   map[string]float64
 	docFreqCache map[string]int64
+	warnings     []string
 }
 
 // New builds a searcher over the segment set. live is the sorted slice of live
@@ -91,6 +94,15 @@ func (se *Searcher) Search(q query.Query, k int) ([]collect.Hit, error) {
 		}
 	}
 	return c.Results(), nil
+}
+
+// Warnings returns any non-fatal planner warnings accumulated while running the
+// last query, such as a regexp scan that visited an excessive number of terms.
+func (se *Searcher) Warnings() []string { return se.warnings }
+
+// warnf records a planner warning to surface to the caller.
+func (se *Searcher) warnf(format string, args ...any) {
+	se.warnings = append(se.warnings, fmt.Sprintf(format, args...))
 }
 
 // fieldReader returns and caches the field reader for a segment, or nil when the
