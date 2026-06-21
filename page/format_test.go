@@ -71,6 +71,9 @@ func TestHeaderByteLayout(t *testing.T) {
 	if U32(b[84:]) != 512 {
 		t.Fatalf("sector_size = %d, want 512", U32(b[84:]))
 	}
+	if U16(b[88:]) != 0x0100 {
+		t.Fatalf("format_version_compat_min = %#x, want 0x0100", U16(b[88:]))
+	}
 	if !bytes.HasPrefix(b[104:124], []byte("search/0.1.0")) {
 		t.Fatalf("creator_string = %q, want prefix search/0.1.0", b[104:124])
 	}
@@ -116,6 +119,43 @@ func TestHeaderIncompatibleFeature(t *testing.T) {
 	b := h.Marshal()
 	if _, err := ParseHeader(b); err != ErrIncompatibleFormat {
 		t.Fatalf("err = %v, want ErrIncompatibleFormat", err)
+	}
+}
+
+func TestHeaderTooNew(t *testing.T) {
+	h, _ := NewHeader(DefaultPageSize, 1, 0, 512, CreatorString("x"))
+	b := h.Marshal()
+	// Demand an engine one minor version past this build and re-seal the header.
+	PutU16(b[88:], EngineVersion+1)
+	PutU32(b[124:], crc32cOf(b[:124]))
+	if _, err := ParseHeader(b); err != ErrTooNew {
+		t.Fatalf("err = %v, want ErrTooNew", err)
+	}
+}
+
+func TestHeaderCompatMinRoundTrip(t *testing.T) {
+	h, _ := NewHeader(DefaultPageSize, 1, 0, 512, CreatorString("x"))
+	if h.FormatVersionCompatMin != FormatCompatMin {
+		t.Fatalf("compat_min = %#x, want %#x", h.FormatVersionCompatMin, FormatCompatMin)
+	}
+	got, err := ParseHeader(h.Marshal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FormatVersionCompatMin != FormatCompatMin {
+		t.Fatalf("parsed compat_min = %#x, want %#x", got.FormatVersionCompatMin, FormatCompatMin)
+	}
+}
+
+// TestHeaderOldFileOpens confirms a file written before the compat field existed
+// (those bytes zero) still opens: zero is below every engine version.
+func TestHeaderOldFileOpens(t *testing.T) {
+	h, _ := NewHeader(DefaultPageSize, 1, 0, 512, CreatorString("x"))
+	b := h.Marshal()
+	PutU16(b[88:], 0)
+	PutU32(b[124:], crc32cOf(b[:124]))
+	if _, err := ParseHeader(b); err != nil {
+		t.Fatalf("zero compat_min should open, got %v", err)
 	}
 }
 

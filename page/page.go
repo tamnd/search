@@ -13,6 +13,18 @@ var Magic = [16]byte{'t', 'a', 'm', 'n', 'd', 's', 'e', 'a', 'r', 'c', 'h', ' ',
 // the file's version must refuse to open it (doc 02 §2.5 step 3).
 const FormatVersion uint32 = 1
 
+// EngineVersion is this build's engine version, encoded as the high byte for the
+// major and the low byte for the minor (0x0100 = 1.0). It is compared against a
+// file's FormatVersionCompatMin to decide whether the build is new enough to open
+// it (doc 02 §13, the 1.0 format freeze).
+const EngineVersion uint16 = 0x0100
+
+// FormatCompatMin is the FormatVersionCompatMin a freshly created file records:
+// the minimum engine version that can open it. At the 1.0 freeze this is 0x0100.
+// It increments only on a breaking format change (changing an existing page-type
+// layout or removing one); backward-compatible extensions leave it unchanged.
+const FormatCompatMin uint16 = 0x0100
+
 // Page-size bounds. A page is a power of two in [MinPageSize, MaxPageSize]; the
 // default is 16384 (16 KiB). The size is fixed at file creation and recorded in
 // the header as a log2 code (doc 02 §2.1 page_size_code).
@@ -98,6 +110,7 @@ var (
 	ErrHeaderCorrupt      = errors.New("search/page: header self-consistency check failed")
 	ErrHeaderChecksumFail = errors.New("search/page: header checksum mismatch")
 	ErrIncompatibleFormat = errors.New("search/page: file requires an unsupported feature")
+	ErrTooNew             = errors.New("search/page: file requires a newer engine version")
 	ErrPageChecksumFail   = errors.New("search/page: page checksum mismatch")
 	ErrBothMetaInvalid    = errors.New("search/page: both meta pages are invalid")
 )

@@ -11,23 +11,30 @@ import (
 // exactly through Marshal and ParseHeader.
 type Header struct {
 	Magic             [16]byte
-	FormatVersion     uint32   // offset 16
-	PageSizeCode      uint16   // offset 20: log2(pageSize) - 12
-	FileFlags         uint16   // offset 22: see Flag* constants
-	CreationTxnID     uint64   // offset 24: txn id of the initial commit (usually 1)
-	CompatFeatures    uint64   // offset 32: required feature flags
-	OptionalFeatures  uint64   // offset 40: optional feature flags
-	DefaultTextCodec  uint32   // offset 48
-	DefaultVecCodec   uint32   // offset 52
-	DefaultStoreCodec uint32   // offset 56
-	DefaultDVCodec    uint32   // offset 60
-	SchemaVersion     uint32   // offset 64
-	PageSizeActual    uint32   // offset 68: redundant byte count
-	FileCreateEpoch   uint64   // offset 72: unix seconds, informational
-	ApplicationID     uint32   // offset 80
-	SectorSize        uint32   // offset 84
-	Reserved          [16]byte // offset 88
-	CreatorString     [20]byte // offset 104: ASCII, NUL-padded
+	FormatVersion     uint32 // offset 16
+	PageSizeCode      uint16 // offset 20: log2(pageSize) - 12
+	FileFlags         uint16 // offset 22: see Flag* constants
+	CreationTxnID     uint64 // offset 24: txn id of the initial commit (usually 1)
+	CompatFeatures    uint64 // offset 32: required feature flags
+	OptionalFeatures  uint64 // offset 40: optional feature flags
+	DefaultTextCodec  uint32 // offset 48
+	DefaultVecCodec   uint32 // offset 52
+	DefaultStoreCodec uint32 // offset 56
+	DefaultDVCodec    uint32 // offset 60
+	SchemaVersion     uint32 // offset 64
+	PageSizeActual    uint32 // offset 68: redundant byte count
+	FileCreateEpoch   uint64 // offset 72: unix seconds, informational
+	ApplicationID     uint32 // offset 80
+	SectorSize        uint32 // offset 84
+	// FormatVersionCompatMin (offset 88) is the minimum engine version that can
+	// open this file (doc 02 §13, the 1.0 format freeze). An engine refuses a
+	// file whose value exceeds its own EngineVersion with ErrTooNew. The spec
+	// places this field at offset 24, but offset 24 is already CreationTxnID in
+	// this as-built layout (see the §2.4 hex-dump deviation noted in the byte
+	// layout test), so the field lives in the formerly reserved region instead.
+	FormatVersionCompatMin uint16   // offset 88
+	Reserved               [14]byte // offset 90
+	CreatorString          [20]byte // offset 104: ASCII, NUL-padded
 	// HeaderCRC32C is at offset 124, computed over bytes 0..123. It is not a
 	// struct input; Marshal computes it and ParseHeader validates it.
 }
@@ -50,7 +57,8 @@ const (
 	hCreateEpoch  = 72
 	hAppID        = 80
 	hSectorSize   = 84
-	hReserved     = 88
+	hCompatMin    = 88
+	hReserved     = 90
 	hCreatorStr   = 104
 	hCRC          = 124
 )
@@ -72,19 +80,20 @@ func NewHeader(pageSize uint32, creationTxnID uint64, epoch int64, sectorSize ui
 		return Header{}, ErrInvalidPageSize
 	}
 	return Header{
-		Magic:             Magic,
-		FormatVersion:     FormatVersion,
-		PageSizeCode:      code,
-		CreationTxnID:     creationTxnID,
-		DefaultTextCodec:  1,
-		DefaultVecCodec:   1,
-		DefaultStoreCodec: 1,
-		DefaultDVCodec:    1,
-		SchemaVersion:     0,
-		PageSizeActual:    pageSize,
-		FileCreateEpoch:   uint64(epoch),
-		SectorSize:        sectorSize,
-		CreatorString:     creator,
+		Magic:                  Magic,
+		FormatVersion:          FormatVersion,
+		PageSizeCode:           code,
+		CreationTxnID:          creationTxnID,
+		DefaultTextCodec:       1,
+		DefaultVecCodec:        1,
+		DefaultStoreCodec:      1,
+		DefaultDVCodec:         1,
+		SchemaVersion:          0,
+		PageSizeActual:         pageSize,
+		FileCreateEpoch:        uint64(epoch),
+		SectorSize:             sectorSize,
+		FormatVersionCompatMin: FormatCompatMin,
+		CreatorString:          creator,
 	}, nil
 }
 
@@ -114,6 +123,7 @@ func (h Header) Marshal() []byte {
 	PutU64(b[hCreateEpoch:], h.FileCreateEpoch)
 	PutU32(b[hAppID:], h.ApplicationID)
 	PutU32(b[hSectorSize:], h.SectorSize)
+	PutU16(b[hCompatMin:], h.FormatVersionCompatMin)
 	copy(b[hReserved:], h.Reserved[:])
 	copy(b[hCreatorStr:], h.CreatorString[:])
 	PutU32(b[hCRC:], checksum.Sum(b[:hCRC]))
@@ -157,10 +167,16 @@ func ParseHeader(b []byte) (Header, error) {
 	h.FileCreateEpoch = U64(b[hCreateEpoch:])
 	h.ApplicationID = U32(b[hAppID:])
 	h.SectorSize = U32(b[hSectorSize:])
-	copy(h.Reserved[:], b[hReserved:hReserved+16])
+	h.FormatVersionCompatMin = U16(b[hCompatMin:])
+	copy(h.Reserved[:], b[hReserved:hReserved+14])
 	copy(h.CreatorString[:], b[hCreatorStr:hCreatorStr+20])
 	if !checksum.Verify(b[:hCRC], U32(b[hCRC:])) {
 		return Header{}, ErrHeaderChecksumFail
+	}
+	// A file that demands a newer engine than this build is refused before any
+	// feature-bit check so the caller gets the actionable "upgrade" error.
+	if h.FormatVersionCompatMin > EngineVersion {
+		return Header{}, ErrTooNew
 	}
 	// compat_features: any bit we do not recognize forces a refusal.
 	if h.CompatFeatures&^knownCompatFeatures != 0 {
