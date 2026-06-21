@@ -78,6 +78,8 @@ func run(args []string) int {
 		return cmdBackup(args[1:])
 	case "vacuum":
 		return cmdVacuum(args[1:])
+	case "bench":
+		return cmdBench(args[1:])
 	default:
 		_, _ = fmt.Fprintf(os.Stderr, "sx: unknown subcommand %q\n\n", args[0])
 		usage(os.Stderr)
@@ -163,6 +165,7 @@ commands:
   backup     copy a consistent snapshot to another path
   restore    copy a backup to a destination and verify it
   vacuum     force-merge all segments and reap deleted documents
+  bench      run a load-test scenario and report latency percentiles
 
 global flags:
   --unsafe-no-lock   open without the multi-process file lock (NFS escape hatch)

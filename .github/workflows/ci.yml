@@ -47,6 +47,25 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: go tool cover -func=coverage.out | tail -1
 
+  # Performance gate. It runs every benchmark once to keep them compiling and
+  # runnable, and runs the allocation-ceiling and regression-detector tests that
+  # guard the hot paths. The full timed SLO measurement against the large real
+  # corpora runs on a dedicated, quiet runner, not here, since CI shared runners
+  # are too noisy for stable latency percentiles (spec doc 19 §9.6).
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+      - name: benchmarks compile and run
+        run: go test -run '^$' -bench=. -benchtime=1x ./bench/...
+      - name: allocation and regression gates
+        run: go test -run 'TestAllocCeiling|TestCompare|TestRunLoadSmoke|TestEveryScenarioRuns' ./bench/...
+
   # golangci-lint bundles staticcheck, govet, ineffassign, errcheck, unused and
   # more, so it is the main quality gate.
   lint:
