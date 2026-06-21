@@ -58,6 +58,49 @@ func TestInfo(t *testing.T) {
 	}
 }
 
+func TestStats(t *testing.T) {
+	db := opsDB(t)
+	defer mustClose(t, db)
+
+	// A read snapshot held open while Stats runs must show up in the live
+	// reader counters, and its txn must be reported as the oldest pinned reader.
+	tx, err := db.Begin(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	st, err := db.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.SegmentCount == 0 || len(st.Segments) == 0 {
+		t.Fatalf("no segments: %+v", st)
+	}
+	if st.DocCount != 3 || st.DeletedDocCount != 1 {
+		t.Fatalf("counts: docs=%d deleted=%d, want 3/1", st.DocCount, st.DeletedDocCount)
+	}
+	if st.TotalTerms == 0 {
+		t.Fatalf("no terms counted: %+v", st)
+	}
+	if st.ActiveReaders < 1 {
+		t.Fatalf("active readers = %d, want at least 1", st.ActiveReaders)
+	}
+	if st.OldestReaderTxn == 0 {
+		t.Fatalf("oldest reader txn should be set with a snapshot open")
+	}
+	// The per-field term counts must sum to the reported total.
+	var sum uint64
+	for _, s := range st.Segments {
+		for _, f := range s.Fields {
+			sum += f.TermCount
+		}
+	}
+	if sum != st.TotalTerms {
+		t.Fatalf("term total %d != sum of fields %d", st.TotalTerms, sum)
+	}
+}
+
 func TestVerifyClean(t *testing.T) {
 	db := opsDB(t)
 	defer mustClose(t, db)

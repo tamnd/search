@@ -79,6 +79,68 @@ func (db *DB) Info() (FileInfo, error) {
 	return fi, nil
 }
 
+// IndexStats is a structural and runtime summary of an open index: the geometry
+// and counts from Info, the per-segment breakdown from Segments, plus the
+// freelist, snapshot, and term totals that an operator watches to judge whether
+// the index needs compaction or vacuum. It is what `sx stats` reports.
+type IndexStats struct {
+	FileInfo
+	// FreePages is the durable freelist count from the live meta page: pages
+	// that are free on disk and reusable by the next write without growing the
+	// file. It does not include scratch pages freed within an open transaction.
+	FreePages uint64
+	// PendingFreePages is the number of pages freed by a committed write but
+	// still pinned by a live read snapshot, so not yet returned to the freelist.
+	// A persistently high value means a long-lived reader is holding back
+	// reclamation.
+	PendingFreePages int
+	// ActiveReaders is the number of open read snapshots.
+	ActiveReaders int
+	// OldestReaderTxn is the transaction id of the oldest pinned snapshot, or 0
+	// when no reader is open. Pages freed at or after this txn cannot be reused.
+	OldestReaderTxn uint64
+	// TotalTerms is the sum of per-field term counts across every live segment.
+	// Terms shared between segments are counted once per segment, so this is an
+	// upper bound on the distinct vocabulary, not the union.
+	TotalTerms uint64
+	// Segments is the per-segment summary, ordered by id.
+	Segments []SegmentInfo
+}
+
+// Stats gathers a structural and runtime summary of the open index. It reads the
+// header, the live meta page, and every segment's metadata (not its bodies), so
+// it stays cheap on an index of any size, and it samples the live reader and
+// freelist bookkeeping under the same lock the pager uses, so the snapshot and
+// reclamation figures are a consistent instant.
+func (db *DB) Stats() (IndexStats, error) {
+	fi, err := db.Info()
+	if err != nil {
+		return IndexStats{}, err
+	}
+	segs, err := db.Segments()
+	if err != nil {
+		return IndexStats{}, err
+	}
+	st := IndexStats{FileInfo: fi, Segments: segs}
+	st.FreePages = db.pgr.Meta().FreelistCount
+	for _, s := range segs {
+		for _, f := range s.Fields {
+			st.TotalTerms += f.TermCount
+		}
+	}
+
+	db.rmu.Lock()
+	st.PendingFreePages = len(db.pendingFree)
+	st.ActiveReaders = len(db.readers)
+	for txn := range db.readers {
+		if st.OldestReaderTxn == 0 || txn < st.OldestReaderTxn {
+			st.OldestReaderTxn = txn
+		}
+	}
+	db.rmu.Unlock()
+	return st, nil
+}
+
 // cString trims a NUL-padded fixed byte array to its string content.
 func cString(b []byte) string {
 	for i, c := range b {
