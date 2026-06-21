@@ -64,11 +64,16 @@ const (
 type OpType uint16
 
 const (
-	OpAddDoc       OpType = 0x01 // add or replace a document
-	OpDeleteDoc    OpType = 0x02 // delete a document by id
-	OpUpdateMeta   OpType = 0x03 // catalog metadata change
-	OpCommitMarker OpType = 0x04 // seal the preceding frames as one transaction
-	OpCheckpoint   OpType = 0x05 // a checkpoint boundary
+	// OpAddDoc records the addition or replacement of a document.
+	OpAddDoc OpType = 0x01
+	// OpDeleteDoc records the deletion of a document by id.
+	OpDeleteDoc OpType = 0x02
+	// OpUpdateMeta records a catalog metadata change.
+	OpUpdateMeta OpType = 0x03
+	// OpCommitMarker seals the preceding frames as one transaction.
+	OpCommitMarker OpType = 0x04
+	// OpCheckpoint records a checkpoint boundary.
+	OpCheckpoint OpType = 0x05
 )
 
 // Errors from the WAL.

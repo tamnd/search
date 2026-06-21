@@ -51,6 +51,8 @@ func (m *Mem) Attach(fc *FaultController) {
 	m.faults = fc
 }
 
+// Open implements vfs.VFS by opening the in-memory file name, creating it when
+// create is true and reporting ErrNotExist when it is absent and create is false.
 func (m *Mem) Open(name string, create bool) (File, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -65,6 +67,7 @@ func (m *Mem) Open(name string, create bool) (File, error) {
 	return &memFile{fs: m, d: d}, nil
 }
 
+// Remove implements vfs.VFS by deleting name; removing an absent file is not an error.
 func (m *Mem) Remove(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -72,6 +75,7 @@ func (m *Mem) Remove(name string) error {
 	return nil
 }
 
+// Exists implements vfs.VFS by reporting whether name is present in memory.
 func (m *Mem) Exists(name string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -102,6 +106,8 @@ type memFile struct {
 	d  *memData
 }
 
+// ReadAt implements vfs.File by reading len(p) bytes at off, zero-filling the
+// tail past the current size and returning EOF when off is already past it.
 func (f *memFile) ReadAt(p []byte, off int64) (int, error) {
 	f.fs.mu.Lock()
 	defer f.fs.mu.Unlock()
@@ -119,6 +125,8 @@ func (f *memFile) ReadAt(p []byte, off int64) (int, error) {
 	return len(p), nil
 }
 
+// WriteAt implements vfs.File by writing p at off, consulting the fault
+// controller first so the write may instead crash or tear.
 func (f *memFile) WriteAt(p []byte, off int64) (int, error) {
 	f.fs.mu.Lock()
 	defer f.fs.mu.Unlock()
@@ -155,6 +163,7 @@ func (f *memFile) growAndCopy(p []byte, off int64) {
 	copy(f.d.data[off:], p)
 }
 
+// Truncate implements vfs.File by setting the in-memory file size to n bytes.
 func (f *memFile) Truncate(n int64) error {
 	f.fs.mu.Lock()
 	defer f.fs.mu.Unlock()
@@ -168,6 +177,8 @@ func (f *memFile) Truncate(n int64) error {
 	return nil
 }
 
+// Sync implements vfs.File. Writes are write-through, so Sync only consults the
+// fault controller and returns an error when an fsync failure or crash is injected.
 func (f *memFile) Sync() error {
 	if f.fs.faults != nil {
 		switch f.fs.faults.onSync() {
@@ -180,12 +191,14 @@ func (f *memFile) Sync() error {
 	return nil
 }
 
+// Size implements vfs.File by returning the current in-memory file size in bytes.
 func (f *memFile) Size() (int64, error) {
 	f.fs.mu.Lock()
 	defer f.fs.mu.Unlock()
 	return int64(len(f.d.data)), nil
 }
 
+// Close implements vfs.File. The handle holds nothing to release, so it is a no-op.
 func (f *memFile) Close() error { return nil }
 
 func tornPrefix(n int) int {

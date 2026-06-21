@@ -138,8 +138,13 @@ func openSortedNumeric(blob []byte) (*sortedNumericColumn, error) {
 	return c, nil
 }
 
-func (c *sortedNumericColumn) Kind() ColumnKind       { return KindSortedNum }
-func (c *sortedNumericColumn) DocCount() uint32       { return c.docCount }
+// Kind reports the column's structural kind, KindSortedNum.
+func (c *sortedNumericColumn) Kind() ColumnKind { return KindSortedNum }
+
+// DocCount returns the number of documents the column spans.
+func (c *sortedNumericColumn) DocCount() uint32 { return c.docCount }
+
+// HasValue reports whether doc index i has at least one value.
 func (c *sortedNumericColumn) HasValue(i uint32) bool { return c.pres.has(i) }
 
 // valueAtFlat returns the j-th value of the flat value array.

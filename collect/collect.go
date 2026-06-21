@@ -82,16 +82,25 @@ func (c *TopK) Results() []Hit {
 // the root so the most replaceable hit is evicted first).
 type hitHeap []Hit
 
+// Len implements heap.Interface, the number of hits in the heap.
 func (h hitHeap) Len() int { return len(h) }
+
+// Less implements heap.Interface, ordering by lower score so the smallest score
+// sits at the root, with ties broken by larger doc-id so it is evicted first.
 func (h hitHeap) Less(i, j int) bool {
 	if h[i].Score != h[j].Score {
 		return h[i].Score < h[j].Score
 	}
 	return h[i].DocID > h[j].DocID
 }
+
+// Swap implements heap.Interface by swapping the hits at i and j.
 func (h hitHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
+// Push implements heap.Interface by appending x to the heap.
 func (h *hitHeap) Push(x any) { *h = append(*h, x.(Hit)) }
+
+// Pop implements heap.Interface by removing and returning the last hit.
 func (h *hitHeap) Pop() any {
 	old := *h
 	n := len(old)

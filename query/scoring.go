@@ -140,13 +140,19 @@ func FunctionScore(q Query, fns ...ScoreFunction) *FunctionScoreQuery {
 	return &FunctionScoreQuery{Query: q, Functions: fns}
 }
 
-func (*FunctionScoreQuery) queryNode()       {}
+func (*FunctionScoreQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *FunctionScoreQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *FunctionScoreQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires a base query and checks every function's filter and fields.
 func (q *FunctionScoreQuery) Validate(s Schema) error {
 	if q.Query == nil {
 		return &Error{Msg: "function_score needs a query"}
@@ -176,6 +182,8 @@ func (q *FunctionScoreQuery) Validate(s Schema) error {
 	}
 	return nil
 }
+
+// Rewrite rewrites the wrapped base query and keeps the functions as is.
 func (q *FunctionScoreQuery) Rewrite() Query {
 	c := *q
 	c.Query = q.Query.Rewrite()
@@ -206,13 +214,19 @@ func BM25F(terms []string, fields ...BM25FField) *BM25FQuery {
 	return &BM25FQuery{Terms: terms, Fields: fields}
 }
 
-func (*BM25FQuery) queryNode()       {}
+func (*BM25FQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *BM25FQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *BM25FQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires at least one term and one field, and checks each field exists.
 func (q *BM25FQuery) Validate(s Schema) error {
 	if len(q.Terms) == 0 {
 		return &Error{Msg: "bm25f needs at least one term"}
@@ -227,6 +241,8 @@ func (q *BM25FQuery) Validate(s Schema) error {
 	}
 	return nil
 }
+
+// Rewrite returns the node unchanged.
 func (q *BM25FQuery) Rewrite() Query { return q }
 
 // RescoreQuery re-ranks the top window of a cheap base query with a second,
@@ -248,13 +264,19 @@ func Rescore(q, rescore Query, window int) *RescoreQuery {
 	return &RescoreQuery{Query: q, Rescore: rescore, WindowSize: window, QueryWeight: 1, RescoreWeight: 1}
 }
 
-func (*RescoreQuery) queryNode()       {}
+func (*RescoreQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *RescoreQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *RescoreQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
+
+// Validate requires both queries, rejects a negative window, and validates each query.
 func (q *RescoreQuery) Validate(s Schema) error {
 	if q.Query == nil || q.Rescore == nil {
 		return &Error{Msg: "rescore needs a base query and a rescore query"}
@@ -267,6 +289,8 @@ func (q *RescoreQuery) Validate(s Schema) error {
 	}
 	return q.Rescore.Validate(s)
 }
+
+// Rewrite rewrites both the base query and the rescore query.
 func (q *RescoreQuery) Rewrite() Query {
 	c := *q
 	c.Query = q.Query.Rewrite()

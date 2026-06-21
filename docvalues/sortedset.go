@@ -143,14 +143,24 @@ func openSortedSet(blob []byte) (*sortedSetColumn, error) {
 	return c, nil
 }
 
-func (c *sortedSetColumn) Kind() ColumnKind       { return KindSortedSet }
-func (c *sortedSetColumn) DocCount() uint32       { return c.docCount }
+// Kind reports the column's structural kind, KindSortedSet.
+func (c *sortedSetColumn) Kind() ColumnKind { return KindSortedSet }
+
+// DocCount returns the number of documents the column spans.
+func (c *sortedSetColumn) DocCount() uint32 { return c.docCount }
+
+// HasValue reports whether doc index i has at least one value.
 func (c *sortedSetColumn) HasValue(i uint32) bool { return c.pres.has(i) }
-func (c *sortedSetColumn) OrdCount() uint32       { return c.ordCount }
+
+// OrdCount returns the number of distinct ordinals in the dictionary.
+func (c *sortedSetColumn) OrdCount() uint32 { return c.ordCount }
+
+// LookupOrd returns the keyword bytes for an ordinal.
 func (c *sortedSetColumn) LookupOrd(ord uint32) []byte {
 	return c.dict.lookup(ord)
 }
 
+// OrdinalsFor returns the sorted ordinals for doc index i, or nil when it has no value.
 func (c *sortedSetColumn) OrdinalsFor(i uint32) []uint32 {
 	if !c.pres.has(i) || int(i)+1 >= len(c.cum) {
 		return nil

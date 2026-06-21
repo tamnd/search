@@ -26,14 +26,19 @@ func KNN(field string, vec []float32, k int) *KNNQuery {
 	return &KNNQuery{Field: field, Vector: vec, K: k}
 }
 
-func (*KNNQuery) queryNode()       {}
+func (*KNNQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *KNNQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *KNNQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
 
+// Validate requires a dense_vector field, a query vector, a positive k, and a valid filter.
 func (q *KNNQuery) Validate(s Schema) error {
 	if q.Field == "" {
 		return &Error{Msg: "knn query needs a field"}
@@ -85,14 +90,19 @@ func Hybrid(text Query, knn *KNNQuery, k int) *HybridQuery {
 	return &HybridQuery{Text: text, KNN: knn, K: k}
 }
 
-func (*HybridQuery) queryNode()       {}
+func (*HybridQuery) queryNode() {}
+
+// Boost returns the query-level boost factor (default 1).
 func (q *HybridQuery) Boost() float32 { return q.boostOr1() }
+
+// WithBoost returns a copy of the node with the boost replaced.
 func (q *HybridQuery) WithBoost(b float32) Query {
 	c := *q
 	c.boost = b
 	return &c
 }
 
+// Validate requires both a text query and a kNN query and validates each one.
 func (q *HybridQuery) Validate(s Schema) error {
 	if q.Text == nil {
 		return &Error{Msg: "hybrid query needs a text query"}
