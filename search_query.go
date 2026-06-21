@@ -92,6 +92,16 @@ func (db *DB) searchTxn(t *Txn, q query.Query, k int) ([]Hit, error) {
 	}
 
 	se := exec.New(c, set, s, analyzer, live, dead)
+
+	// Dense-vector queries are not term iterators; dispatch them to the vector
+	// search path, which reads the per-segment HNSW graphs (doc 15).
+	switch qq := q.(type) {
+	case *query.KNNQuery:
+		return db.searchKNN(c, s, set, se, dead, qq, k)
+	case *query.HybridQuery:
+		return db.searchHybrid(c, s, set, se, dead, qq, k)
+	}
+
 	scored, err := se.Search(q, k)
 	if err != nil {
 		return nil, err
