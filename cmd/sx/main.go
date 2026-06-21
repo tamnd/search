@@ -20,6 +20,7 @@ func main() {
 }
 
 func run(args []string) int {
+	args = stripGlobalFlags(args)
 	if len(args) == 0 {
 		usage(os.Stderr)
 		return 2
@@ -76,6 +77,26 @@ func run(args []string) int {
 	}
 }
 
+// unsafeNoLock is set by the global --unsafe-no-lock flag. It is read by
+// openIndex when opening any index, so it applies uniformly to every command.
+var unsafeNoLock bool
+
+// stripGlobalFlags pulls flags that apply to every subcommand out of the
+// argument list, wherever they appear, and returns the remaining arguments. It
+// keeps the per-command flag sets free of having to declare these.
+func stripGlobalFlags(args []string) []string {
+	out := args[:0:0]
+	for _, a := range args {
+		switch a {
+		case "--unsafe-no-lock":
+			unsafeNoLock = true
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func printVersion(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "sx %s\nformat version: %d\nbuild: %s\n",
 		version, search.FormatVersion, buildCommit())
@@ -130,5 +151,8 @@ commands:
   import     index documents from JSONL in streaming batches
   backup     copy a consistent snapshot to another path
   vacuum     force-merge all segments and reap deleted documents
+
+global flags:
+  --unsafe-no-lock   open without the multi-process file lock (NFS escape hatch)
 `)
 }

@@ -45,9 +45,10 @@ func fail(format string, a ...any) int {
 	return 1
 }
 
-// openIndex opens (creating if needed) the index at path.
+// openIndex opens (creating if needed) the index at path. It honors the global
+// --unsafe-no-lock flag so every command opts out of file locking together.
 func openIndex(path string, readOnly bool) (*search.DB, error) {
-	return search.Open(path, search.Options{ReadOnly: readOnly})
+	return search.Open(path, search.Options{ReadOnly: readOnly, UnsafeNoLock: unsafeNoLock})
 }
 
 // cmdCreate creates a .sx file and optionally applies a schema from a JSON file.
