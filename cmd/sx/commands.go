@@ -28,11 +28,15 @@ type schemaFile struct {
 
 // schemaFileField is one field entry in a schema definition file.
 type schemaFileField struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Analyzer string `json:"analyzer,omitempty"`
-	Dims     int    `json:"dims,omitempty"`
-	Metric   string `json:"metric,omitempty"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	Analyzer       string `json:"analyzer,omitempty"`
+	Dims           int    `json:"dims,omitempty"`
+	Metric         string `json:"metric,omitempty"`
+	Quantization   string `json:"quantization,omitempty"`
+	M              int    `json:"m,omitempty"`
+	EfConstruction int    `json:"ef_construction,omitempty"`
+	NumCandidates  int    `json:"num_candidates,omitempty"`
 }
 
 // fail prints an error to stderr and returns the standard failure code.
@@ -104,6 +108,18 @@ func loadSchemaFile(path string) (*schema.Schema, error) {
 		}
 		if ff.Metric != "" {
 			f.Opts.Metric = ff.Metric
+		}
+		if ff.Quantization != "" {
+			f.Opts.Quantization = ff.Quantization
+		}
+		if ff.M != 0 {
+			f.Opts.M = ff.M
+		}
+		if ff.EfConstruction != 0 {
+			f.Opts.EfConstruction = ff.EfConstruction
+		}
+		if ff.NumCandidates != 0 {
+			f.Opts.NumCandidates = ff.NumCandidates
 		}
 		if err := s.Add(f); err != nil {
 			return nil, err
@@ -457,13 +473,20 @@ func cmdSchema(args []string) int {
 	fields := append([]schema.Field(nil), s.Fields...)
 	sort.SliceStable(fields, func(i, j int) bool { return fields[i].Name < fields[j].Name })
 	for _, f := range fields {
-		out.Fields = append(out.Fields, schemaFileField{
+		ff := schemaFileField{
 			Name:     f.Name,
 			Type:     string(f.Type),
 			Analyzer: f.Opts.Analyzer,
 			Dims:     f.Opts.Dims,
 			Metric:   f.Opts.Metric,
-		})
+		}
+		if f.Type == schema.TypeDenseVector {
+			ff.Quantization = f.Opts.Quantization
+			ff.M = f.Opts.M
+			ff.EfConstruction = f.Opts.EfConstruction
+			ff.NumCandidates = f.Opts.NumCandidates
+		}
+		out.Fields = append(out.Fields, ff)
 	}
 	return printJSON(out)
 }
@@ -989,6 +1012,174 @@ func printRequestTable(db *search.DB, hits []search.Hit, aggs map[string]agg.Res
 		}
 	}
 	return 0
+}
+
+// parseVector parses a query vector from a flag value: a comma or whitespace
+// separated list of floats, or @path to read the same from a file (which may
+// hold a JSON array). It is used by the knn and hybrid subcommands.
+func parseVector(arg string) ([]float32, error) {
+	text := arg
+	if strings.HasPrefix(arg, "@") {
+		b, err := os.ReadFile(arg[1:])
+		if err != nil {
+			return nil, err
+		}
+		text = string(b)
+	}
+	text = strings.TrimSpace(text)
+	text = strings.TrimPrefix(text, "[")
+	text = strings.TrimSuffix(text, "]")
+	fields := strings.FieldsFunc(text, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("empty vector")
+	}
+	out := make([]float32, len(fields))
+	for i, f := range fields {
+		v, err := strconv.ParseFloat(strings.TrimSpace(f), 32)
+		if err != nil {
+			return nil, fmt.Errorf("element %d %q: %v", i, f, err)
+		}
+		out[i] = float32(v)
+	}
+	return out, nil
+}
+
+// cmdKNN runs a k-nearest-neighbor search over a dense_vector field (spec 2063
+// doc 15 §9). The query vector is given with --vector; an optional --filter is a
+// compact query string that pre-filters candidates (filtered ANN).
+func cmdKNN(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx knn <file> --field f --vector '0.1,0.2,...' [flags]")
+	}
+	path := args[0]
+	fs := flag.NewFlagSet("knn", flag.ContinueOnError)
+	field := fs.String("field", "", "dense_vector field to search")
+	vec := fs.String("vector", "", "query vector: comma/space separated floats, or @file")
+	k := fs.Int("k", 10, "number of neighbors to return")
+	numCand := fs.Int("num-candidates", 0, "per-segment efSearch (0 uses the field default)")
+	filter := fs.String("filter", "", "compact query string to pre-filter candidates")
+	fields := fs.String("fields", "", "comma-separated stored fields to include in each hit")
+	format := fs.String("format", "table", "output format: table|json|jsonl")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if *field == "" || *vec == "" {
+		return fail("knn needs --field and --vector")
+	}
+	if *k < 1 {
+		return fail("--k must be positive")
+	}
+	v, err := parseVector(*vec)
+	if err != nil {
+		return fail("vector: %v", err)
+	}
+
+	db, err := openIndex(path, true)
+	if err != nil {
+		return fail("open %s: %v", path, err)
+	}
+	defer closeDB(db)
+
+	knn := query.KNN(*field, v, *k)
+	knn.NumCandidates = *numCand
+	if *filter != "" {
+		fq, ferr := query.ParseString(*filter, defaultField(db))
+		if ferr != nil {
+			return fail("filter: %v", ferr)
+		}
+		knn.Filter = fq
+	}
+
+	start := time.Now()
+	hits, err := db.Search(knn, *k)
+	if err != nil {
+		return fail("knn: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	proj := splitList(*fields)
+	switch *format {
+	case "json":
+		return printQueryJSON(hits, proj, false)
+	case "jsonl":
+		return printQueryJSONL(hits, proj, false)
+	default:
+		return printQueryTable(db, hits, proj, "knn "+*field, elapsed)
+	}
+}
+
+// cmdHybrid runs a hybrid search: a text query and a kNN query fused with
+// Reciprocal Rank Fusion (spec 2063 doc 15 §10). The text query is a positional
+// compact query string; the vector side is given with --field and --vector.
+func cmdHybrid(args []string) int {
+	if len(args) < 1 {
+		return fail("usage: sx hybrid <file> --field f --vector '...' [flags] '<text query>'")
+	}
+	path := args[0]
+	fs := flag.NewFlagSet("hybrid", flag.ContinueOnError)
+	textField := fs.String("text-field", "", "default field for bare terms in the text query")
+	field := fs.String("field", "", "dense_vector field to search")
+	vec := fs.String("vector", "", "query vector: comma/space separated floats, or @file")
+	k := fs.Int("k", 10, "number of hits to return")
+	rrfK := fs.Int("rrf-k", 60, "RRF fusion constant")
+	numCand := fs.Int("num-candidates", 0, "per-segment efSearch (0 uses the field default)")
+	fields := fs.String("fields", "", "comma-separated stored fields to include in each hit")
+	format := fs.String("format", "table", "output format: table|json|jsonl")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	qstr := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if qstr == "" {
+		return fail("hybrid needs a text query string")
+	}
+	if *field == "" || *vec == "" {
+		return fail("hybrid needs --field and --vector")
+	}
+	if *k < 1 {
+		return fail("--k must be positive")
+	}
+	v, err := parseVector(*vec)
+	if err != nil {
+		return fail("vector: %v", err)
+	}
+
+	db, err := openIndex(path, true)
+	if err != nil {
+		return fail("open %s: %v", path, err)
+	}
+	defer closeDB(db)
+
+	defField := *textField
+	if defField == "" {
+		defField = defaultField(db)
+	}
+	textQ, err := query.ParseString(qstr, defField)
+	if err != nil {
+		return fail("text query: %v", err)
+	}
+	knn := query.KNN(*field, v, *k)
+	knn.NumCandidates = *numCand
+	h := query.Hybrid(textQ, knn, *k)
+	h.RRFK = *rrfK
+
+	start := time.Now()
+	hits, err := db.Search(h, *k)
+	if err != nil {
+		return fail("hybrid: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	proj := splitList(*fields)
+	switch *format {
+	case "json":
+		return printQueryJSON(hits, proj, false)
+	case "jsonl":
+		return printQueryJSONL(hits, proj, false)
+	default:
+		return printQueryTable(db, hits, proj, "hybrid "+qstr, elapsed)
+	}
 }
 
 // printJSON writes v as indented JSON to stdout.

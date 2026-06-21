@@ -67,8 +67,36 @@ type FieldOptions struct {
 	TermVectors bool
 	Analyzer    string // text only; "" means the standard analyzer
 	Dims        int    // dense_vector only
-	Metric      string // dense_vector only: cosine|dot_product|l2_norm
+	Metric      string // dense_vector only: cosine|dot_product|l2
+	// Dense-vector index knobs (doc 15 §21.1). Quantization is one of "none",
+	// "int8", "int8_rerank", "pq", "pq_rerank". Index controls whether an HNSW
+	// graph is built; when false, kNN falls back to exact scan. M and
+	// EfConstruction are the HNSW build parameters; NumCandidates is the default
+	// query-time efSearch.
+	ElementType    string // dense_vector only: float32|byte
+	Quantization   string // dense_vector only
+	Index          bool   // dense_vector only: build an HNSW graph
+	M              int    // dense_vector only: HNSW M
+	EfConstruction int    // dense_vector only: HNSW efConstruction
+	NumCandidates  int    // dense_vector only: default efSearch
 }
+
+// The supported dense-vector metrics and quantization modes.
+const (
+	MetricCosine = "cosine"
+	MetricDot    = "dot_product"
+	MetricL2     = "l2"
+
+	QuantNone       = "none"
+	QuantInt8       = "int8"
+	QuantInt8Rerank = "int8_rerank"
+	QuantPQ         = "pq"
+	QuantPQRerank   = "pq_rerank"
+)
+
+// MaxDims is the largest dense-vector dimension the engine accepts (doc 15
+// §15.1).
+const MaxDims = 4096
 
 // Field is one entry in the mapping: a name, a type, and its options.
 type Field struct {
@@ -103,7 +131,14 @@ func DefaultOptions(t FieldType) FieldOptions {
 		o.DocValues = true
 	case TypeDenseVector:
 		o.Indexed = true
-		o.Metric = "cosine"
+		o.Stored = true
+		o.Metric = MetricCosine
+		o.ElementType = "float32"
+		o.Quantization = QuantNone
+		o.Index = true
+		o.M = 16
+		o.EfConstruction = 100
+		o.NumCandidates = 100
 	case TypeStored:
 		// indexed stays false: a stored blob is retrieval-only.
 	}
@@ -138,13 +173,43 @@ func (s *Schema) Add(f Field) error {
 	if !f.Type.Valid() {
 		return fmt.Errorf("schema: field %q has unknown type %q", f.Name, f.Type)
 	}
-	if f.Type == TypeDenseVector && f.Opts.Dims <= 0 {
-		return fmt.Errorf("schema: dense_vector field %q needs a positive dims", f.Name)
+	if f.Type == TypeDenseVector {
+		if err := validateVectorField(f); err != nil {
+			return err
+		}
 	}
 	if _, ok := s.Lookup(f.Name); ok {
 		return fmt.Errorf("schema: duplicate field %q", f.Name)
 	}
 	s.Fields = append(s.Fields, f)
+	return nil
+}
+
+// validateVectorField checks a dense_vector field's options against the documented
+// limits (doc 15 §21.1): dimension range, known metric, known quantization, and
+// HNSW parameter ranges. It is called both when a field is added and when a stored
+// schema is reloaded.
+func validateVectorField(f Field) error {
+	o := f.Opts
+	if o.Dims <= 0 || o.Dims > MaxDims {
+		return fmt.Errorf("schema: dense_vector field %q needs dims in 1..%d, got %d", f.Name, MaxDims, o.Dims)
+	}
+	switch o.Metric {
+	case "", MetricCosine, MetricDot, MetricL2:
+	default:
+		return fmt.Errorf("schema: dense_vector field %q has unknown metric %q", f.Name, o.Metric)
+	}
+	switch o.Quantization {
+	case "", QuantNone, QuantInt8, QuantInt8Rerank, QuantPQ, QuantPQRerank:
+	default:
+		return fmt.Errorf("schema: dense_vector field %q has unknown quantization %q", f.Name, o.Quantization)
+	}
+	if o.M != 0 && (o.M < 4 || o.M > 64) {
+		return fmt.Errorf("schema: dense_vector field %q M must be in 4..64, got %d", f.Name, o.M)
+	}
+	if o.EfConstruction != 0 && o.EfConstruction < o.M {
+		return fmt.Errorf("schema: dense_vector field %q ef_construction must be >= M", f.Name)
+	}
 	return nil
 }
 
@@ -201,6 +266,12 @@ func (s *Schema) Serialize() ([]byte, error) {
 			"analyzer":     f.Opts.Analyzer,
 			"dims":         int64(f.Opts.Dims),
 			"metric":       f.Opts.Metric,
+			"element_type": f.Opts.ElementType,
+			"quantization": f.Opts.Quantization,
+			"vec_index":    f.Opts.Index,
+			"hnsw_m":       int64(f.Opts.M),
+			"hnsw_efc":     int64(f.Opts.EfConstruction),
+			"num_cands":    int64(f.Opts.NumCandidates),
 		}
 	}
 	return msgpack.Marshal(map[string]any{
@@ -236,14 +307,20 @@ func Deserialize(b []byte) (*Schema, error) {
 			Name: asString(fm["name"]),
 			Type: FieldType(asString(fm["type"])),
 			Opts: FieldOptions{
-				Indexed:     asBool(fm["indexed"]),
-				Stored:      asBool(fm["stored"]),
-				DocValues:   asBool(fm["doc_values"]),
-				Positions:   asBool(fm["positions"]),
-				TermVectors: asBool(fm["term_vectors"]),
-				Analyzer:    asString(fm["analyzer"]),
-				Dims:        int(asInt(fm["dims"])),
-				Metric:      asString(fm["metric"]),
+				Indexed:        asBool(fm["indexed"]),
+				Stored:         asBool(fm["stored"]),
+				DocValues:      asBool(fm["doc_values"]),
+				Positions:      asBool(fm["positions"]),
+				TermVectors:    asBool(fm["term_vectors"]),
+				Analyzer:       asString(fm["analyzer"]),
+				Dims:           int(asInt(fm["dims"])),
+				Metric:         asString(fm["metric"]),
+				ElementType:    asString(fm["element_type"]),
+				Quantization:   asString(fm["quantization"]),
+				Index:          asBool(fm["vec_index"]),
+				M:              int(asInt(fm["hnsw_m"])),
+				EfConstruction: int(asInt(fm["hnsw_efc"])),
+				NumCandidates:  int(asInt(fm["num_cands"])),
 			},
 		}
 		s.Fields = append(s.Fields, f)

@@ -41,9 +41,12 @@ func flushBatch(c *catalog.Catalog, s *schema.Schema, entries []docEntry, maxDoc
 		}
 		mt.AddDoc()
 	}
-	// A batch with no analyzed terms (every document carried only non-indexed or
-	// absent fields) produces no postings, so no segment is written.
-	if len(mt.FieldNames()) == 0 {
+	// A batch with no analyzed terms and no dense vectors (every document carried
+	// only non-indexed or absent fields) produces no segment data, so nothing is
+	// written. A vector-only batch still writes a segment so its vectors are
+	// discoverable, even though it has no postings.
+	hasVectors := schemaHasVectorValues(s, entries)
+	if len(mt.FieldNames()) == 0 && !hasVectors {
 		return nil
 	}
 
@@ -59,7 +62,12 @@ func flushBatch(c *catalog.Catalog, s *schema.Schema, entries []docEntry, maxDoc
 	// Build the columnar doc-values and BKD points index for the same span from
 	// the raw document bodies (doc 14). Sorting, faceting, and fast range scans
 	// read these columns; the inverted index above serves matching.
-	return flushDocValues(c, s, segID, entries, baseDoc, uint32(maxDoc)+1)
+	if err := flushDocValues(c, s, segID, entries, baseDoc, uint32(maxDoc)+1); err != nil {
+		return err
+	}
+	// Build the HNSW graph and quantized sidecar for every dense_vector field
+	// (doc 15). kNN and hybrid search read these per-field blobs.
+	return flushVectors(c, s, segID, entries)
 }
 
 // indexFields analyzes every indexed text and keyword field of one document into
