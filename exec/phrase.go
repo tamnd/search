@@ -29,16 +29,21 @@ func newSegPhraseScorer(terms []*termScorer, slop int) *segPhraseScorer {
 func (p *segPhraseScorer) docID() uint32 { return p.cur }
 
 func (p *segPhraseScorer) next() (uint32, error) {
-	return p.find(func() (uint32, error) { return p.and.next() })
+	d, err := p.and.next()
+	return p.find(d, err)
 }
 
 func (p *segPhraseScorer) advance(target uint32) (uint32, error) {
-	return p.find(func() (uint32, error) { return p.and.advance(target) })
+	d, err := p.and.advance(target)
+	return p.find(d, err)
 }
 
-func (p *segPhraseScorer) find(step func() (uint32, error)) (uint32, error) {
+// find filters the conjunction's candidates down to documents whose positions
+// satisfy the phrase. A rejected candidate is followed with the conjunction's
+// next(), not a repeat advance(target): once the conjunction has passed the
+// target, re-advancing returns the same document and would spin.
+func (p *segPhraseScorer) find(d uint32, err error) (uint32, error) {
 	for {
-		d, err := step()
 		if err != nil {
 			return 0, err
 		}
@@ -46,14 +51,15 @@ func (p *segPhraseScorer) find(step func() (uint32, error)) (uint32, error) {
 			p.cur = noMore
 			return noMore, nil
 		}
-		ok, err := p.matches()
-		if err != nil {
-			return 0, err
+		ok, mErr := p.matches()
+		if mErr != nil {
+			return 0, mErr
 		}
 		if ok {
 			p.cur = d
 			return d, nil
 		}
+		d, err = p.and.next()
 	}
 }
 

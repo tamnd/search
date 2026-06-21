@@ -174,6 +174,44 @@ func TestSpanNearAdvancedSkips(t *testing.T) {
 	}
 }
 
+// TestPhraseAdvancedSkips drives the phrase scorer through advance() the same
+// way TestSpanNearAdvancedSkips drives the span scorer: a phrase must clause
+// behind a lower-cost marker term that advances it onto a document where the
+// phrase does not hold. The scorer must skip and continue, not spin.
+func TestPhraseAdvancedSkips(t *testing.T) {
+	docs := []map[string]any{
+		{"_id": "p0", "title": "quick brown alpha"},
+		{"_id": "p1", "title": "quick brown beta"},
+		{"_id": "p2", "title": "quick brown gamma"},
+		{"_id": "p3", "title": "quick brown delta"},
+		{"_id": "p4", "title": "quick brown epsilon"},
+		// Marked, but the exact phrase "quick brown" is broken by a word.
+		{"_id": "n0", "title": "quick green brown mark"},
+		// Marked and the phrase holds.
+		{"_id": "n1", "title": "quick brown mark"},
+	}
+	db := indexAdv(t, docs)
+	defer mustClose(t, db)
+
+	q := query.Bool().
+		MustClause(query.Term("title", "mark")).
+		MustClause(query.Phrase("title", "quick brown"))
+	hits, err := db.Search(q, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := hitSet(hits)
+	if !got["n1"] {
+		t.Fatalf("expected n1 (marked, phrase holds), got %v", extIDs(hits))
+	}
+	if got["n0"] {
+		t.Fatalf("n0 breaks the phrase and must not match, got %v", extIDs(hits))
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected exactly n1, got %v", extIDs(hits))
+	}
+}
+
 func TestGeoDistance_Correctness(t *testing.T) {
 	// Build a ring of points at increasing distance from a center and verify the
 	// query keeps exactly those within the radius, matching a reference haversine.

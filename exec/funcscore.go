@@ -407,16 +407,20 @@ type minScoreScorer struct {
 func (m *minScoreScorer) docID() uint32 { return m.cur }
 
 func (m *minScoreScorer) next() (uint32, error) {
-	return m.find(func() (uint32, error) { return m.inner.next() })
+	d, err := m.inner.next()
+	return m.find(d, err)
 }
 
 func (m *minScoreScorer) advance(t uint32) (uint32, error) {
-	return m.find(func() (uint32, error) { return m.inner.advance(t) })
+	d, err := m.inner.advance(t)
+	return m.find(d, err)
 }
 
-func (m *minScoreScorer) find(step func() (uint32, error)) (uint32, error) {
+// find drops documents whose score is below the floor. A rejected document is
+// followed with inner.next(), not a repeat advance(t): once inner has passed the
+// target, re-advancing returns the same document and would spin.
+func (m *minScoreScorer) find(d uint32, err error) (uint32, error) {
 	for {
-		d, err := step()
 		if err != nil {
 			return 0, err
 		}
@@ -428,6 +432,7 @@ func (m *minScoreScorer) find(step func() (uint32, error)) (uint32, error) {
 			m.cur = d
 			return d, nil
 		}
+		d, err = m.inner.next()
 	}
 }
 
